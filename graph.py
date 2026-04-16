@@ -129,12 +129,16 @@ def make_execute_and_log_node(timeframe: str):
             return {f"results_{timeframe}": []}
 
         # Execute
-        results = execute_strategies(_INDEX, timeframe, pending)
+        results, data_from, data_to = execute_strategies(_INDEX, timeframe, pending)
         strategy_names = [s["name"] for s in pending]
 
         # Log to DB
-        run_id = log_run(_INDEX, timeframe, strategy_names, results)
-        print(f"[exec/{timeframe}] Logged run_id={run_id} with {len(strategy_names)} strategies.")
+        iteration = state.get("iteration", 0) + 1
+        run_id = log_run(
+            _INDEX, timeframe, strategy_names, results,
+            iteration=iteration, data_from=data_from, data_to=data_to,
+        )
+        print(f"[exec/{timeframe}] iter={iteration} run_id={run_id} with {len(strategy_names)} strategies.")
 
         # Summarize for state (no DataFrames)
         summaries = []

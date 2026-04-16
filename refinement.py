@@ -89,11 +89,14 @@ def _refine_once(llm: BaseChatModel, winner_descriptions: list[dict]) -> None:
     strategy_defs = _parse_strategies(response.content)
 
     # Execute with backtest_multi.py — all 3 timeframes
-    results = execute_multi_strategies(_INDEX, strategy_defs)
+    results, data_from, data_to = execute_multi_strategies(_INDEX, strategy_defs)
     strategy_names = [s["name"] for s in strategy_defs]
 
     # Log to DB
-    log_run(_INDEX, "mixed", strategy_names, results)
+    log_run(
+        _INDEX, "mixed", strategy_names, results,
+        data_from=data_from, data_to=data_to,
+    )
 
     # Publish to GitHub
     publish(

@@ -61,7 +61,9 @@ def load(index: str = "NIFTY", timeframe: str = "daily") -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def _init_db(conn: sqlite3.Connection) -> None:
+def _ensure_db(conn: sqlite3.Connection) -> None:
+    """Create tables if fresh DB, then migrate columns for existing DBs."""
+    # Create tables (IF NOT EXISTS — safe on existing DBs)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS runs (
             run_id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,11 +91,32 @@ def _init_db(conn: sqlite3.Connection) -> None:
             avg_loss    REAL,
             expectancy  REAL
         );
+    """)
+
+    # Migrate: add new columns to existing tables
+    run_cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    if "iteration" not in run_cols:
+        conn.execute("ALTER TABLE runs ADD COLUMN iteration INTEGER")
+
+    res_cols = {row[1] for row in conn.execute("PRAGMA table_info(results)").fetchall()}
+    if "timeframe" not in res_cols:
+        conn.execute("ALTER TABLE results ADD COLUMN timeframe TEXT")
+        # Backfill from runs table for old rows
+        conn.execute("""
+            UPDATE results SET timeframe = (
+                SELECT r.timeframe FROM runs r WHERE r.run_id = results.run_id
+            ) WHERE timeframe IS NULL
+        """)
+
+    # Create indexes (safe to run always — IF NOT EXISTS)
+    conn.executescript("""
         CREATE INDEX IF NOT EXISTS idx_results_expectancy ON results(expectancy);
         CREATE INDEX IF NOT EXISTS idx_results_win_rate ON results(win_rate);
         CREATE INDEX IF NOT EXISTS idx_results_strategy ON results(strategy);
+        CREATE INDEX IF NOT EXISTS idx_results_timeframe ON results(timeframe);
         CREATE INDEX IF NOT EXISTS idx_runs_timeframe ON runs(timeframe);
     """)
+    conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -141,23 +164,26 @@ def log_run(
     timeframe: str,
     strategy_names: list[str],
     run_results: list[tuple[dict, pd.DataFrame]],
+    iteration: int | None = None,
+    data_from: str | None = None,
+    data_to: str | None = None,
 ) -> int:
-    """Write results to SQLite. Returns the run_id."""
+    """Write results to SQLite. Returns the run_id.
+
+    Args:
+        data_from/data_to: Full date range of the source data (not signal dates).
+                           Pass these from the loaded DataFrame to get accurate ranges.
+        iteration: Main loop iteration number, or None for refinement runs.
+    """
     run_time = datetime.now().isoformat()
 
-    data_from = data_to = None
-    for _, result in run_results:
-        if "date" in result.columns and not result.empty:
-            data_from = str(result["date"].min().date())
-            data_to = str(result["date"].max().date())
-            break
-
     conn = sqlite3.connect(DB_PATH)
-    _init_db(conn)
+    _ensure_db(conn)
 
     cur = conn.execute(
-        "INSERT INTO runs (run_at, index_name, timeframe, data_from, data_to) VALUES (?, ?, ?, ?, ?)",
-        (run_time, index, timeframe, data_from, data_to),
+        """INSERT INTO runs (run_at, iteration, index_name, timeframe, data_from, data_to)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (run_time, iteration, index, timeframe, data_from, data_to),
     )
     run_id = cur.lastrowid
 
@@ -170,11 +196,12 @@ def log_run(
                 continue
             conn.execute(
                 """INSERT INTO results
-                   (run_id, strategy, params, signals, horizon, count, mean, median, std, min, max,
-                    win_rate, avg_win, avg_loss, expectancy)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (run_id, timeframe, strategy, params, signals, horizon, count, mean, median,
+                    std, min, max, win_rate, avg_win, avg_loss, expectancy)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     run_id,
+                    timeframe,
                     name,
                     params_json,
                     len(result),
@@ -205,11 +232,9 @@ def log_run(
 def count_strategies(timeframe: str) -> int:
     """Return number of distinct strategies logged for a timeframe."""
     conn = sqlite3.connect(DB_PATH)
-    _init_db(conn)
+    _ensure_db(conn)
     cur = conn.execute(
-        """SELECT COUNT(DISTINCT res.strategy)
-           FROM results res JOIN runs r ON r.run_id = res.run_id
-           WHERE r.timeframe = ?""",
+        "SELECT COUNT(DISTINCT strategy) FROM results WHERE timeframe = ?",
         (timeframe,),
     )
     count = cur.fetchone()[0]
@@ -230,17 +255,18 @@ def query_winners(
 ) -> pd.DataFrame:
     """Find strategies with strong edge in either direction (long or short)."""
     conn = sqlite3.connect(DB_PATH)
-    _init_db(conn)
+    _ensure_db(conn)
     base_query = """
-        SELECT r.run_at, r.index_name, r.timeframe, res.strategy, res.params,
-               res.horizon, res.signals, res.mean, res.median, res.std,
+        SELECT r.run_at, r.iteration, r.index_name, res.timeframe,
+               res.strategy, res.params, res.horizon, res.signals,
+               res.mean, res.median, res.std,
                res.win_rate, res.avg_win, res.avg_loss, res.expectancy,
                CASE WHEN res.expectancy >= 0 THEN 'long' ELSE 'short' END AS direction
         FROM results res JOIN runs r ON r.run_id = res.run_id
         WHERE ABS(res.expectancy) >= ? AND res.signals >= ?
     """
     if timeframe:
-        base_query += " AND r.timeframe = ?"
+        base_query += " AND res.timeframe = ?"
         base_query += " ORDER BY ABS(res.expectancy) DESC LIMIT ?"
         df = pd.read_sql_query(
             base_query,
@@ -308,8 +334,12 @@ def execute_strategies(
     index: str,
     timeframe: str,
     strategy_defs: list[StrategyDef],
-) -> list[tuple[dict, pd.DataFrame]]:
-    """Write LLM-generated strategies to a file, import, and execute them."""
+) -> tuple[list[tuple[dict, pd.DataFrame]], str, str]:
+    """Write LLM-generated strategies to a file, import, and execute them.
+
+    Returns:
+        (results, data_from, data_to) — results list plus the full data date range.
+    """
     # 1. Build the strategy file
     strat_file = Path(f"strategies/strat_{timeframe}.py")
     strat_file.parent.mkdir(exist_ok=True)
@@ -337,6 +367,10 @@ def execute_strategies(
     # 3. Load data once
     df = load(index=index, timeframe=timeframe)
 
+    # Capture the full data date range (not signal dates)
+    data_from = str(df["date"].min().date()) if not df.empty else None
+    data_to = str(df["date"].max().date()) if not df.empty else None
+
     # 4. Execute each strategy
     results = []
     for sdef in strategy_defs:
@@ -348,4 +382,4 @@ def execute_strategies(
             print(f"[WARN] Strategy {sdef['name']} failed: {e}")
             results.append((sdef["params"], pd.DataFrame()))  # empty result
 
-    return results
+    return results, data_from, data_to
