@@ -3,28 +3,30 @@
 import pandas as pd
 import numpy as np
 
-def volatility_squeeze_breakout(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+def three_down_days_mean_reversion(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     params = {
-        "signal": "Signal is True when: (1) the current day's high-low range is less than 60% of the 20-day rolling average range ('volatility squeeze'), AND (2) the current close is above the previous day's high ('bullish breakout')",
-        "field": "high, low, close",
-        "volatility_squeeze_window": 20,
-        "volatility_squeeze_threshold": 0.6,
-        "breakout_lookback": 1,
-        "forward_days": [1, 3, 5],
+        "signal": "Signal is True when there are 3 consecutive down closes (each day's close < previous day's close) and the 3-day cumulative return is below -2% (i.e., sharp short-term pullback).",
+        "field": "close",
+        "consecutive_down_days": 3,
+        "cumulative_return_threshold": -2.0,
+        "forward_days": [1, 2, 5],
     }
-    # Calculate daily range and its 20-day rolling mean
-    range_ = df['high'] - df['low']
-    rolling_range = range_.rolling(window=params["volatility_squeeze_window"], min_periods=1).mean()
-    # Squeeze condition
-    squeeze = range_ < (params["volatility_squeeze_threshold"] * rolling_range)
-    # Bullish breakout: today's close > prior high
-    prev_high = df['high'].shift(1)
-    breakout = df['close'] > prev_high
-    # Signal mask
-    mask = (squeeze & breakout)
+
+    # Compute consecutive down closes
+    down_1 = df["close"].diff(1) < 0
+    down_2 = down_1.shift(1)
+    down_3 = down_1.shift(2)
+    three_down = down_1 & down_2 & down_3
+
+    # Compute 3-day cumulative return
+    ret_3d = df["close"].pct_change(3) * 100
+    sharp_pullback = ret_3d < params["cumulative_return_threshold"]
+
+    mask = three_down & sharp_pullback
+
     result = df.loc[mask, ["date", "close"]].copy()
-    result["fwd_1d"] = df["close"].shift(-1) / df["close"] * 100 - 100
-    result["fwd_3d"] = df["close"].shift(-3) / df["close"] * 100 - 100
-    result["fwd_5d"] = df["close"].shift(-5) / df["close"] * 100 - 100
+    for i in params["forward_days"]:
+        result[f"fwd_{i}d"] = df["close"].shift(-i).loc[mask].values / df["close"].loc[mask].values * 100 - 100
+
     return params, result
 
