@@ -3,9 +3,11 @@
 import importlib
 import importlib.util
 import json
+import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -30,13 +32,14 @@ _git_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 
-def _run_git(*args: str) -> subprocess.CompletedProcess:
+def _run_git(*args: str, env: dict | None = None) -> subprocess.CompletedProcess:
     """Run a git command and return the result."""
     result = subprocess.run(
         ["git", *args],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
     if result.returncode != 0:
         print(f"[WARN] git {' '.join(args)} failed: {result.stderr.strip()}")
@@ -294,8 +297,16 @@ def publish(
     strategy_names: list[str],
     run_results: list[tuple[dict, pd.DataFrame]],
 ) -> None:
-    """Stage, commit with searchable message, and push to a per-timeframe branch."""
+    """Archive DB + generated strategy file to the experiments branch for this timeframe.
+
+    Uses git plumbing so the current HEAD and working tree are NEVER touched —
+    the user's code branch (e.g. main) stays clean. Each publish builds a fresh
+    tree containing only the files we want to archive, creates a commit via
+    `git commit-tree` parented on the remote branch's current tip (or orphaned
+    if the branch doesn't exist yet), and pushes that commit directly.
+    """
     branch = BRANCH_MAP[timeframe]
+    remote_ref = f"refs/heads/{branch}"
 
     lines = [f"backtest({timeframe}): {len(strategy_names)} strategies"]
     lines.append("")
@@ -319,10 +330,44 @@ def publish(
 
     msg = "\n".join(lines)
 
+    strat_name = "strat_mixed.py" if timeframe == "mixed" else f"strat_{timeframe}.py"
+    files_to_archive = [DB_PATH, f"strategies/{strat_name}"]
+    files_to_archive = [p for p in files_to_archive if Path(p).exists()]
+    if not files_to_archive:
+        return
+
     with _git_lock:
-        _run_git("add", "logs/backtest.db", "strategies/")
-        _run_git("commit", "-m", msg)
-        _run_git("push", "-u", "origin", f"HEAD:refs/heads/{branch}")
+        # 1. Build a tree in an isolated temp index — no impact on the real index.
+        tmp_dir = tempfile.mkdtemp(prefix="publish-index-")
+        tmp_index = str(Path(tmp_dir) / "index")
+        try:
+            env = os.environ.copy()
+            env["GIT_INDEX_FILE"] = tmp_index
+            _run_git("add", "--", *files_to_archive, env=env)
+            tree_sha = _run_git("write-tree", env=env).stdout.strip()
+        finally:
+            Path(tmp_index).unlink(missing_ok=True)
+            Path(tmp_dir).rmdir()
+
+        if not tree_sha:
+            print(f"[WARN] publish({timeframe}): empty tree, skipping")
+            return
+
+        # 2. Find the remote branch's current tip to parent onto (if it exists).
+        ls = _run_git("ls-remote", "origin", remote_ref)
+        parent_sha = ls.stdout.split()[0] if ls.stdout.strip() else None
+
+        # 3. Build the commit object.
+        commit_args = ["commit-tree", tree_sha, "-m", msg]
+        if parent_sha:
+            commit_args += ["-p", parent_sha]
+        commit_sha = _run_git(*commit_args).stdout.strip()
+        if not commit_sha:
+            print(f"[WARN] publish({timeframe}): commit-tree failed, skipping")
+            return
+
+        # 4. Push the commit directly to the remote branch.
+        _run_git("push", "origin", f"{commit_sha}:{remote_ref}")
 
 
 # ---------------------------------------------------------------------------
