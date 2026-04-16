@@ -3,33 +3,43 @@
 import pandas as pd
 import numpy as np
 
-def three_week_range_breakout_volume_spike(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+def two_week_bullish_engulfing_with_range_contraction(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     params = {
-        "signal": "Bullish signal when current week's close breaks above highest high of previous 3 weeks (i.e., highest high in weeks t-1, t-2, t-3), AND weekly volume is at least 30% above its 20-week moving average.",
-        "field": "high, close, volume",
-        "breakout_lookback": 3,
-        "volume_ma_window": 20,
-        "volume_threshold_pct_above_ma": 30,
-        "direction": "bullish breakout",
-        "forward_weeks": [1, 4]
+        "signal": "Signal is generated when a bullish engulfing pattern occurs: current week's body (close > open) completely engulfs previous week's body (current open < previous close and current close > previous open). Additionally, the current week's range (high-low) is less than the average range of the prior 8 weeks (range contraction filter).",
+        "field": "open, high, low, close",
+        "engulfing_lookback": 1,
+        "range_contraction_lookback": 8,
+        "direction": "bullish reversal",
+        "forward_weeks": [1, 2, 4]
     }
-    lookback = params["breakout_lookback"]
-    vol_window = params["volume_ma_window"]
-    vol_thresh = params["volume_threshold_pct_above_ma"]
-    
-    # Highest high of previous 3 weeks (do not include current week)
-    prev_highest_high = df["high"].shift(1).rolling(window=lookback).max()
-    # 20-week moving average of volume
-    volume_ma = df["volume"].rolling(window=vol_window).mean()
-    volume_spike = df["volume"] >= (1 + vol_thresh / 100) * volume_ma
-    
-    breakout = df["close"] > prev_highest_high
-    
-    mask = breakout & volume_spike
-    
+
+    # Bullish Engulfing: current body positive, previous body negative or smaller, body completely "engulfs" prior week
+    prev_open = df["open"].shift(1)
+    prev_close = df["close"].shift(1)
+    prev_body_low = np.minimum(prev_open, prev_close)
+    prev_body_high = np.maximum(prev_open, prev_close)
+
+    # Current body
+    curr_body_low = np.minimum(df["open"], df["close"])
+    curr_body_high = np.maximum(df["open"], df["close"])
+    bullish_engulfing = (
+        (df["close"] > df["open"]) &  # current bullish
+        (prev_close < prev_open) &     # previous bearish
+        (df["open"] < prev_close) &   # opens below prev close
+        (df["close"] > prev_open) &   # closes above prev open
+        (curr_body_low <= prev_body_low) & (curr_body_high >= prev_body_high) # current body fully engulfs prev
+    )
+
+    # Range contraction: current week range < mean of prev 8 weeks (excluding current week)
+    curr_range = df["high"] - df["low"]
+    avg_prior8_range = curr_range.shift(1).rolling(window=8).mean()
+    range_contraction = curr_range < avg_prior8_range
+
+    mask = bullish_engulfing & range_contraction
     result = df.loc[mask, ["date", "close"]].copy()
-    # Forward returns
-    for fw in params["forward_weeks"]:
-        result[f"fwd_{fw}d"] = df["close"].shift(-fw).loc[mask].values / df["close"].loc[mask].values * 100 - 100
+
+    for w in [1, 2, 4]:
+        result[f"fwd_{w}d"] = df["close"].shift(-w).loc[mask].values / df["close"].loc[mask].values * 100 - 100
+
     return params, result
 
