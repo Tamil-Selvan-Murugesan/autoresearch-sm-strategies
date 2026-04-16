@@ -1,0 +1,64 @@
+# ──────────────────────────────────────────────────────────────────────
+# Automated Backtesting System — Configuration
+# ──────────────────────────────────────────────────────────────────────
+
+# Index to backtest against
+index: "NIFTY"
+
+# Timeframes to run in the main loop (each gets its own planner + exec node)
+timeframes:
+  - "5min"
+  - "daily"
+  - "weekly"
+
+# ── Main loop ────────────────────────────────────────────────────────
+
+# Number of strategies each planner generates per iteration
+strategies_per_iteration: 5
+
+# Stop when each timeframe reaches this many logged strategies
+max_strategies_per_timeframe: 50
+
+# ── Refinement loop ─────────────────────────────────────────────────
+
+# Number of cross-timeframe strategies the refiner generates per batch
+strategies_per_refinement: 5
+
+# Seconds between DB polls when waiting for a threshold
+refinement_poll_interval: 180
+
+# Refinement kicks in every N main-loop strategies (cumulative across timeframes)
+refinement_threshold_step: 15
+
+# ── Winner criteria ──────────────────────────────────────────────────
+
+# Minimum |expectancy| (%) to qualify as a winner
+min_abs_expectancy: 0.15
+
+# Minimum number of signals to qualify as a winner
+min_signals: 30
+
+# Max winners to fetch for refinement context
+max_winners: 50
+
+# ── Data paths ───────────────────────────────────────────────────────
+
+data_dirs:
+  5min: "data/5min"
+  daily: "data/daily"
+  weekly: "data/weekly"
+
+db_path: "logs/backtest.db"
+
+# ── Git / publish ────────────────────────────────────────────────────
+
+# Branch prefix — each timeframe pushes to <branch_prefix>/<timeframe>
+branch_prefix: "experiments"
+
+# ── LLM ──────────────────────────────────────────────────────────────
+
+llm:
+  provider: "azure_openai"       # azure_openai | openai | anthropic
+  model: "gpt-4.1"               # model or deployment name
+  temperature: 0.7
+  api_version: "2024-12-01-preview"  # Azure-only
