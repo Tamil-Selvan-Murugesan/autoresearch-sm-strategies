@@ -3,46 +3,25 @@
 import pandas as pd
 import numpy as np
 
-def opening_range_high_breakout_forward_returns(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+def nr7_then_range_expansion(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     params = {
-        "signal": "Signal is True when the high of the first 15 minutes (first 3 bars) is broken to the upside later in the session on an intraday 5-min bar. Bars that break above the opening range high, but not on the opening range itself, trigger the signal.",
-        "field": ["open", "high", "low", "close"],
-        "opening_range_minutes": 15,
-        "opening_range_bars": 3,
-        "breakout_lookback_start_bar": 4,
-        "breakout_lookback_end_bar": 75,
+        "signal": "Signal is True on bars where the previous bar is an NR7 (its high-low range is the narrowest of the past 7 bars), AND the current bar's range is at least 2x the prior bar's range (range expansion). Measures forward returns from bars after expansion.",
+        "field": "high, low",
+        "nrN_lookback": 7,
+        "expansion_mult": 2.0,
         "forward_bars": [1, 5]
     }
-
-    df = df.copy()
-    df['date'] = pd.to_datetime(df['date'])
-    df['date_only'] = df['date'].dt.normalize()
-    # Mark bar number within day
-    df['bar_num'] = df.groupby('date_only').cumcount() + 1
-
-    # Compute opening range high per day (first 3 bars)
-    opening_high = df[df['bar_num'] <= params['opening_range_bars']].groupby('date_only')['high'].max()
-    df = df.merge(opening_high.rename('opening_high'), left_on='date_only', right_index=True, how='left')
-
-    # Signal: high crosses above opening_high AND bar_num > opening_range_bars
-    # To avoid repeated trigger: only first breakout bar triggers in a day after bar 3
-    def first_breakout_mask(day_df):
-        # Only bars after the opening range
-        mask = (day_df['bar_num'] > params['opening_range_bars']) & (day_df['high'] > day_df['opening_high'].iloc[0])
-        # Ensure it's the first breakout after the opening range
-        if mask.any():
-            idx = mask.idxmax()
-            res = pd.Series(False, index=day_df.index)
-            res.loc[idx] = True
-            return res
-        else:
-            return pd.Series(False, index=day_df.index)
     
-    mask = df.groupby('date_only', group_keys=False).apply(first_breakout_mask)
-    
+    rng = df['high'] - df['low']
+    nr7 = rng.rolling(7, min_periods=7).apply(lambda x: x[-1] == np.min(x), raw=True).astype(bool)
+    nr7_prev = nr7.shift(1)
+    # For bars where previous is NR7 and current range expansion
+    rng_prev = rng.shift(1)
+    expansion = rng >= (2.0 * rng_prev)
+    mask = nr7_prev & expansion
     result = df.loc[mask, ['date', 'close']].copy()
-    for N in params['forward_bars']:
-        # Forward returns in percent
-        result[f'fwd_{N}d'] = df['close'].shift(-N).loc[result.index].values / result['close'].values * 100 - 100
+    # Forward returns
+    for bars in params["forward_bars"]:
+        result[f"fwd_{bars}d"] = df['close'].shift(-bars).loc[mask].values / result['close'] * 100 - 100
     return params, result
 
