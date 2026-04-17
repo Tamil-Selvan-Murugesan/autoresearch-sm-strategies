@@ -3,39 +3,46 @@
 import pandas as pd
 import numpy as np
 
-def vwap_crossover_with_intraday_volume_spike(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+def opening_range_high_breakout_forward_returns(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     params = {
-        "signal": "Signal when the close price crosses above intraday VWAP AND volume is at least 1.5x the rolling 20-bar average volume. Only triggers on upward cross.",
-        "field": ["close", "volume"],
-        "vwap_window": "All bars since session start (per day)",
-        "volume_spike_multiple": 1.5,
-        "volume_rolling_window": 20,
+        "signal": "Signal is True when the high of the first 15 minutes (first 3 bars) is broken to the upside later in the session on an intraday 5-min bar. Bars that break above the opening range high, but not on the opening range itself, trigger the signal.",
+        "field": ["open", "high", "low", "close"],
+        "opening_range_minutes": 15,
+        "opening_range_bars": 3,
+        "breakout_lookback_start_bar": 4,
+        "breakout_lookback_end_bar": 75,
         "forward_bars": [1, 5]
     }
 
     df = df.copy()
-    df["date"] = pd.to_datetime(df["date"])
-    df["date_only"] = df["date"].dt.normalize()
+    df['date'] = pd.to_datetime(df['date'])
+    df['date_only'] = df['date'].dt.normalize()
+    # Mark bar number within day
+    df['bar_num'] = df.groupby('date_only').cumcount() + 1
 
-    # Calculate intraday cumulative sum per session for VWAP
-    df["cum_vol_x_price"] = df["close"] * df["volume"]
-    df["cum_vol_x_price_cumsum"] = df.groupby("date_only")["cum_vol_x_price"].cumsum()
-    df["cum_volume_cumsum"] = df.groupby("date_only")["volume"].cumsum()
-    df["vwap"] = df["cum_vol_x_price_cumsum"] / df["cum_volume_cumsum"]
+    # Compute opening range high per day (first 3 bars)
+    opening_high = df[df['bar_num'] <= params['opening_range_bars']].groupby('date_only')['high'].max()
+    df = df.merge(opening_high.rename('opening_high'), left_on='date_only', right_index=True, how='left')
+
+    # Signal: high crosses above opening_high AND bar_num > opening_range_bars
+    # To avoid repeated trigger: only first breakout bar triggers in a day after bar 3
+    def first_breakout_mask(day_df):
+        # Only bars after the opening range
+        mask = (day_df['bar_num'] > params['opening_range_bars']) & (day_df['high'] > day_df['opening_high'].iloc[0])
+        # Ensure it's the first breakout after the opening range
+        if mask.any():
+            idx = mask.idxmax()
+            res = pd.Series(False, index=day_df.index)
+            res.loc[idx] = True
+            return res
+        else:
+            return pd.Series(False, index=day_df.index)
     
-    # Volume spike: volume >= 1.5x 20-bar rolling mean (non-overlapping day boundaries)
-    df["rolling_vol"] = df.groupby("date_only")["volume"].transform(lambda x: x.rolling(20, min_periods=1).mean())
-    vol_spike = df["volume"] >= (1.5 * df["rolling_vol"])
+    mask = df.groupby('date_only', group_keys=False).apply(first_breakout_mask)
     
-    # VWAP upward cross
-def _upward_cross(series, ref):
-        prev = series.shift(1)
-        prev_ref = ref.shift(1)
-        return (prev < prev_ref) & (series > ref)
-    cross = _upward_cross(df["close"], df["vwap"])
-    
-    mask = cross & vol_spike
-    result = df.loc[mask, ["date", "close"]].copy()
-    for k in [1,5]:
-        result[f"fwd_{k}d"] = df["close"].shift(-k).loc[mask].values / df["close"].loc[mask].values * 100 - 100
+    result = df.loc[mask, ['date', 'close']].copy()
+    for N in params['forward_bars']:
+        # Forward returns in percent
+        result[f'fwd_{N}d'] = df['close'].shift(-N).loc[result.index].values / result['close'].values * 100 - 100
     return params, result
+
