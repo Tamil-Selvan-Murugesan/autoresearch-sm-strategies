@@ -20,6 +20,14 @@ DB_PATH = CFG["db_path"]
 DATA_DIRS = CFG["data_dirs"]
 PUBLISH_ENABLED = CFG.get("publish_to_github", True)
 
+# Sanity gate on per-horizon mean forward return. Anything beyond this is
+# physically impossible on an index over any reasonable window — it's a sign
+# the strategy's forward-return calc is broken (classic case: shift() applied
+# to the filtered DataFrame instead of the full one). Offending horizons are
+# dropped from `results` with a warning; the strategy still counts in
+# `attempts` so the planner memory captures it.
+_MAX_SANE_ABS_MEAN_PCT = 20.0
+
 _prefix = CFG["branch_prefix"]
 BRANCH_MAP = {tf: f"{_prefix}/{tf}" for tf in CFG["timeframes"]}
 BRANCH_MAP["mixed"] = f"{_prefix}/mixed"
@@ -250,6 +258,12 @@ def log_run(
         for col in fwd_cols:
             s = summarize(result[col])
             if not s:
+                continue
+            if abs(s["mean"]) > _MAX_SANE_ABS_MEAN_PCT:
+                print(
+                    f"[WARN] {timeframe}/{name}/{col}: |mean|={s['mean']}% > "
+                    f"{_MAX_SANE_ABS_MEAN_PCT}% — skipping (likely forward-return bug)"
+                )
                 continue
             conn.execute(
                 """INSERT INTO results
