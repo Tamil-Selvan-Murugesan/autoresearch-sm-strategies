@@ -36,15 +36,21 @@ DB path is `db_path` in `config.yaml`.
 
 1. **Main loop** (`graph.py`) — a LangGraph `StateGraph`. Router fans out in parallel to one planner node per timeframe (`plan_5min`, `plan_daily`, `plan_weekly`), each of which calls the LLM to generate strategy code. Each feeds its own `exec_<tf>` node which writes the code to `strategies/strat_<tf>.py`, dynamically imports it, runs each strategy function against the loaded parquet, logs results to SQLite, and calls `publish()`. All three `exec_*` nodes converge on `stop_check`, which loops until every timeframe has `>= max_strategies_per_timeframe` distinct strategies logged.
 
-2. **Refinement loop** (`refinement.py`) — an independent async loop. Polls `count_strategies()` for the main timeframes; when the cumulative total crosses the next threshold (multiples of `refinement_threshold_step`), it fetches winners (`|expectancy| >= min_abs_expectancy`, `signals >= min_signals`) and asks the LLM for cross-timeframe strategies. Those are executed via `backtest_multi.execute_multi_strategies()`, which passes **all three DataFrames** to each strategy function. Results go to the same DB with `timeframe='mixed'`.
+2. **Refinement loop** (`refinement.py`) — an independent async loop. Polls `count_strategies()` for the main timeframes; when the cumulative total crosses the next threshold (multiples of `refinement_threshold_step`), it fetches winners (see **Winner semantics** below) and asks the LLM for cross-timeframe strategies. Those are executed via `backtest_multi.execute_multi_strategies()`, which passes **all three DataFrames** to each strategy function. Results go to the same DB with `timeframe='mixed'`.
 
 ### LLM-generated strategy contract
 
 Strategies are Python function source produced by the LLM and written to `strategies/strat_<tf>.py`. Each main-loop strategy signature: `def fn(df) -> tuple[dict, pd.DataFrame]`. Refinement strategy signature: `def fn(df_5min, df_daily, df_weekly) -> tuple[dict, pd.DataFrame]`. Result DataFrame must contain `date`, `close`, and one or more `fwd_<N>d` / `fwd_<N>bars` columns of forward returns in percent. `summarize()` computes stats from every column whose name starts with `fwd_`.
 
-### Winner/expectancy semantics
+### Winner semantics
 
-`expectancy = (win_rate/100 * avg_win) + ((1 - win_rate/100) * avg_loss)`. Filter is on **absolute value**: negative expectancy = short signal, positive = long. `query_winners()` adds a `direction` column derived from the sign.
+A strategy is a winner when it shows **both** directional consistency **and** significant average movement, plus enough signals to matter:
+
+- **Long winner** : `win_rate >= min_win_rate` AND `mean >=  min_abs_mean`
+- **Short winner**: `win_rate <= (100 - min_win_rate)` AND `mean <= -min_abs_mean`
+- AND `signals >= min_signals` in both cases.
+
+Defaults: `min_win_rate=60`, `min_abs_mean=0.30`, `min_signals=30` (see `config.yaml`). `query_winners()` adds a `direction` column derived from the sign of `mean`. Expectancy — `(win_rate/100 * avg_win) + ((1 - win_rate/100) * avg_loss)` — is still computed and stored on every row, but it is no longer part of the filter; it's kept only for context in the refinement prompt.
 
 ### Publish flow — important, non-obvious
 

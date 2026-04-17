@@ -17,7 +17,8 @@ _TIMEFRAMES = CFG["timeframes"]
 _STRATS_PER_REFINE = CFG["strategies_per_refinement"]
 _POLL_INTERVAL = CFG["refinement_poll_interval"]
 _THRESHOLD_STEP = CFG["refinement_threshold_step"]
-_MIN_ABS_EXP = CFG["min_abs_expectancy"]
+_MIN_WIN_RATE = CFG["min_win_rate"]
+_MIN_ABS_MEAN = CFG["min_abs_mean"]
 _MIN_SIGNALS = CFG["min_signals"]
 _MAX_WINNERS = CFG["max_winners"]
 
@@ -30,7 +31,8 @@ def _count_main_strategies() -> int:
 def _get_winner_descriptions() -> list[dict]:
     """Fetch winners and format them for the LLM."""
     winners = query_winners(
-        min_abs_expectancy=_MIN_ABS_EXP,
+        min_win_rate=_MIN_WIN_RATE,
+        min_abs_mean=_MIN_ABS_MEAN,
         min_signals=_MIN_SIGNALS,
         limit=_MAX_WINNERS,
     )

@@ -318,12 +318,22 @@ def get_attempts(timeframe: str, limit: int = 500) -> pd.DataFrame:
 
 
 def query_winners(
-    min_abs_expectancy: float = 0.15,
+    min_win_rate: float = 60.0,
+    min_abs_mean: float = 0.30,
     min_signals: int = 30,
     timeframe: str | None = None,
     limit: int = 50,
 ) -> pd.DataFrame:
-    """Find strategies with strong edge in either direction (long or short)."""
+    """Find strategies with directional consistency AND significant average movement.
+
+    Long winner : win_rate >= min_win_rate        AND mean >=  min_abs_mean
+    Short winner: win_rate <= (100 - min_win_rate) AND mean <= -min_abs_mean
+
+    Expectancy is still selected for context but is no longer part of the filter.
+    """
+    short_win_rate_max = 100.0 - min_win_rate
+    neg_abs_mean = -min_abs_mean
+
     conn = sqlite3.connect(DB_PATH)
     _ensure_db(conn)
     base_query = """
@@ -331,25 +341,22 @@ def query_winners(
                res.strategy, res.params, res.horizon, res.signals,
                res.mean, res.median, res.std,
                res.win_rate, res.avg_win, res.avg_loss, res.expectancy,
-               CASE WHEN res.expectancy >= 0 THEN 'long' ELSE 'short' END AS direction
+               CASE WHEN res.mean >= 0 THEN 'long' ELSE 'short' END AS direction
         FROM results res JOIN runs r ON r.run_id = res.run_id
-        WHERE ABS(res.expectancy) >= ? AND res.signals >= ?
+        WHERE res.signals >= ?
+          AND (
+                (res.win_rate >= ? AND res.mean >=  ?) OR
+                (res.win_rate <= ? AND res.mean <=  ?)
+              )
     """
+    sql_params: list = [min_signals, min_win_rate, min_abs_mean, short_win_rate_max, neg_abs_mean]
     if timeframe:
         base_query += " AND res.timeframe = ?"
-        base_query += " ORDER BY ABS(res.expectancy) DESC LIMIT ?"
-        df = pd.read_sql_query(
-            base_query,
-            conn,
-            params=(min_abs_expectancy, min_signals, timeframe, limit),
-        )
-    else:
-        base_query += " ORDER BY ABS(res.expectancy) DESC LIMIT ?"
-        df = pd.read_sql_query(
-            base_query,
-            conn,
-            params=(min_abs_expectancy, min_signals, limit),
-        )
+        sql_params.append(timeframe)
+    base_query += " ORDER BY ABS(res.mean) DESC LIMIT ?"
+    sql_params.append(limit)
+
+    df = pd.read_sql_query(base_query, conn, params=tuple(sql_params))
     conn.close()
     return df
 

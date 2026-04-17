@@ -142,13 +142,23 @@ Signatures:
 
 Result DataFrame must have `date`, `close`, and **one or more** columns prefixed `fwd_` (e.g. `fwd_1d`, `fwd_5d`, `fwd_10bars`). `summarize()` in `backtest.py` computes stats from every `fwd_*` column.
 
-**Expectancy formula** (what "winner" means):
+**Winner definition** (what `query_winners()` selects):
+
+```
+long  winner : win_rate >= min_win_rate         AND mean >=  min_abs_mean
+short winner : win_rate <= (100 - min_win_rate) AND mean <= -min_abs_mean
+AND in both cases: signals >= min_signals
+```
+
+Defaults (see `config.yaml`): `min_win_rate=60`, `min_abs_mean=0.30` (percent), `min_signals=30`. `direction` is derived from the sign of `mean` — positive = `long`, negative = `short`.
+
+**Expectancy** is still computed and stored on every `results` row as context for the refinement prompt:
 
 ```
 expectancy = (win_rate/100) × avg_win + (1 − win_rate/100) × avg_loss
 ```
 
-Sign → direction (positive = long, negative = short). A strategy qualifies as a winner when `|expectancy| >= min_abs_expectancy` and `signals >= min_signals`.
+but it is **not** part of the winner filter.
 
 ---
 
@@ -193,7 +203,7 @@ attempts                      PLANNER MEMORY — one row per strategy the LLM pr
 **Key queries:**
 
 - `count_strategies(tf)` → counts distinct strategy names in `attempts` (guarantees loop termination even when the LLM produces buggy code).
-- `query_winners(min_abs_expectancy, min_signals, tf)` → selects from `results` with `ABS(expectancy)` filter and adds a `direction` column from the sign.
+- `query_winners(min_win_rate, min_abs_mean, min_signals, tf)` → selects from `results` with `(win_rate, mean)` thresholds for both long and short, and adds a `direction` column from the sign of `mean`.
 - `get_attempts(tf)` → reads the last 500 rows ordered by `created_at` — used directly as planner memory.
 
 ---
@@ -211,7 +221,7 @@ All tunables live in `config.yaml`. `config.py` is a 3-line loader exposing `CFG
 | `strategies_per_refinement` | Strategies per refinement LLM call. |
 | `refinement_poll_interval` | Seconds between DB polls when below threshold. |
 | `refinement_threshold_step` | Refinement fires every N *cumulative* main-loop strategies. |
-| `min_abs_expectancy`, `min_signals`, `max_winners` | Winner criteria for refinement's input. |
+| `min_win_rate`, `min_abs_mean`, `min_signals`, `max_winners` | Winner criteria for refinement's input (see §4 for the exact rule). |
 | `db_path` | SQLite file path. |
 | `branch_prefix` | Git branch prefix for `publish()`. Final branch names are `<prefix>/<timeframe>` plus `<prefix>/mixed`. |
 | `llm.provider` | `azure_openai` | `openai` | `anthropic` — selected by `run.py::_make_llm()`. |
@@ -282,7 +292,7 @@ This fixed the pathological case where the 5min planner kept regenerating the sa
 | --- | --- |
 | **Add a new timeframe.** | Add it to `timeframes` in `config.yaml`. Add `prompts/planner_<tf>.md`. Add a `<tf>` key to `data_dirs`. Place `data/<tf>/<index>_<tf>.parquet`. `build_graph()` will wire it up automatically. |
 | **Change strategy batch size.** | `strategies_per_iteration` / `strategies_per_refinement` in config. |
-| **Change winner definition.** | `min_abs_expectancy`, `min_signals` in config. Applied to refinement's input pool. |
+| **Change winner definition.** | `min_win_rate`, `min_abs_mean`, `min_signals` in config. Applied to refinement's input pool (see §4). |
 | **Swap LLM provider.** | Set `llm.provider` to `openai`/`anthropic` and set `llm.model`. Export the appropriate API keys. `run.py::_make_llm()` handles the rest. |
 | **Use a different LLM per planner.** | In `run.py`, replace the `llm_config = {f"planner_{tf}": llm for tf in _timeframes}` dict with individual instances. Keys are `planner_5min`, `planner_daily`, `planner_weekly`, `planner_refinement`. |
 | **Tweak a planner's prompt.** | Edit `prompts/planner_<tf>.md`. `{n}` is replaced with the strategy count at load time. |
