@@ -3,50 +3,39 @@
 import pandas as pd
 import numpy as np
 
-import pandas as pd
-import numpy as np
-
-def opening_range_breakout_15min_high_volume(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+def vwap_crossover_with_intraday_volume_spike(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     params = {
-        "signal": "Long signal when price breaks above the highest high of the opening 15 minutes (first 3 bars) with current bar's volume > 2x the rolling 10-bar average volume (excluding the opening 3 bars).",
-        "field": ["high", "close", "volume", "date"],
-        "opening_minutes": 15,
-        "opening_bars": 3,
-        "breakout_side": "up",
-        "volume_lookback": 10,
-        "volume_multiplier": 2.0,
-        "exclude_bars": "opening range bars excluded from signal triggers",
-        "forward_bars": [3, 10]
+        "signal": "Signal when the close price crosses above intraday VWAP AND volume is at least 1.5x the rolling 20-bar average volume. Only triggers on upward cross.",
+        "field": ["close", "volume"],
+        "vwap_window": "All bars since session start (per day)",
+        "volume_spike_multiple": 1.5,
+        "volume_rolling_window": 20,
+        "forward_bars": [1, 5]
     }
 
     df = df.copy()
-    df['date'] = pd.to_datetime(df['date'])
-    df['time'] = df['date'].dt.time
-    df['session'] = df['date'].dt.date
+    df["date"] = pd.to_datetime(df["date"])
+    df["date_only"] = df["date"].dt.normalize()
 
-    # Identify bar-in-day index
-    df['bar_in_day'] = df.groupby('session').cumcount()
-
-    # Calculate opening range high: first 3 bars
-    opening_high = df[df['bar_in_day'] < params["opening_bars"]].groupby('session')['high'].transform('max')
-    df['opening_high'] = opening_high
-
-    # Rolling volume average (exclude opening bars)
-    df['vol_roll'] = df.groupby('session')['volume'].transform(lambda x: x.shift(1).rolling(params["volume_lookback"]).mean())
-
-    # Signal: price closes above opening high, not in first 3 bars, and volume spike
-    mask = (
-        (df['bar_in_day'] >= params["opening_bars"]) &
-        (df['close'] > df['opening_high']) &
-        (df['volume'] > params["volume_multiplier"] * df['vol_roll'])
-    )
-
+    # Calculate intraday cumulative sum per session for VWAP
+    df["cum_vol_x_price"] = df["close"] * df["volume"]
+    df["cum_vol_x_price_cumsum"] = df.groupby("date_only")["cum_vol_x_price"].cumsum()
+    df["cum_volume_cumsum"] = df.groupby("date_only")["volume"].cumsum()
+    df["vwap"] = df["cum_vol_x_price_cumsum"] / df["cum_volume_cumsum"]
+    
+    # Volume spike: volume >= 1.5x 20-bar rolling mean (non-overlapping day boundaries)
+    df["rolling_vol"] = df.groupby("date_only")["volume"].transform(lambda x: x.rolling(20, min_periods=1).mean())
+    vol_spike = df["volume"] >= (1.5 * df["rolling_vol"])
+    
+    # VWAP upward cross
+def _upward_cross(series, ref):
+        prev = series.shift(1)
+        prev_ref = ref.shift(1)
+        return (prev < prev_ref) & (series > ref)
+    cross = _upward_cross(df["close"], df["vwap"])
+    
+    mask = cross & vol_spike
     result = df.loc[mask, ["date", "close"]].copy()
-
-    for N in params["forward_bars"]:
-        result[f"fwd_{N}d"] = (
-            df["close"].shift(-N).loc[mask].values / result["close"].values * 100 - 100
-        )
-
+    for k in [1,5]:
+        result[f"fwd_{k}d"] = df["close"].shift(-k).loc[mask].values / df["close"].loc[mask].values * 100 - 100
     return params, result
-
