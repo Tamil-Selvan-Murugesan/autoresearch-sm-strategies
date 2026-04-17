@@ -1,17 +1,16 @@
 """Core backtesting engine for single-timeframe strategies (5min, daily, weekly)."""
 
-import importlib
-import importlib.util
 import json
 import os
 import sqlite3
 import subprocess
-import sys
 import tempfile
 import threading
+import traceback
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from config import CFG
@@ -96,6 +95,22 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
         );
     """)
 
+    # `attempts` is the planner memory: one row per generated strategy, whether
+    # it ran successfully, returned zero signals, or crashed. Planner nodes read
+    # from here to avoid regenerating what the LLM has already tried.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS attempts (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            timeframe  TEXT NOT NULL,
+            strategy   TEXT NOT NULL,
+            params     TEXT NOT NULL,
+            status     TEXT NOT NULL,   -- 'ok' | 'zero_signals' | 'error'
+            signals    INTEGER,
+            error      TEXT
+        );
+    """)
+
     # Migrate: add new columns to existing tables
     run_cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
     if "iteration" not in run_cols:
@@ -118,6 +133,8 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_results_strategy ON results(strategy);
         CREATE INDEX IF NOT EXISTS idx_results_timeframe ON results(timeframe);
         CREATE INDEX IF NOT EXISTS idx_runs_timeframe ON runs(timeframe);
+        CREATE INDEX IF NOT EXISTS idx_attempts_timeframe ON attempts(timeframe);
+        CREATE INDEX IF NOT EXISTS idx_attempts_strategy ON attempts(strategy);
     """)
     conn.commit()
 
@@ -233,16 +250,66 @@ def log_run(
 
 
 def count_strategies(timeframe: str) -> int:
-    """Return number of distinct strategies logged for a timeframe."""
+    """Return number of distinct strategies attempted for a timeframe.
+
+    Counts every LLM-generated attempt (success, zero-signals, or error) so
+    the main loop still terminates when the LLM produces buggy code. Use
+    `attempts`, not `results`, because failed strategies leave no rows in
+    `results` (their DataFrames are empty).
+    """
     conn = sqlite3.connect(DB_PATH)
     _ensure_db(conn)
     cur = conn.execute(
-        "SELECT COUNT(DISTINCT strategy) FROM results WHERE timeframe = ?",
+        "SELECT COUNT(DISTINCT strategy) FROM attempts WHERE timeframe = ?",
         (timeframe,),
     )
     count = cur.fetchone()[0]
     conn.close()
     return count
+
+
+# ---------------------------------------------------------------------------
+# Planner memory (attempts)
+# ---------------------------------------------------------------------------
+
+
+def log_attempt(
+    timeframe: str,
+    strategy: str,
+    params: dict,
+    status: str,
+    signals: int | None = None,
+    error: str | None = None,
+) -> None:
+    """Record one generated strategy — whether it ran, returned 0 signals, or crashed.
+
+    Planners read this back as memory so the LLM doesn't regenerate the same
+    strategy. `status` ∈ {'ok', 'zero_signals', 'error'}.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    _ensure_db(conn)
+    conn.execute(
+        """INSERT INTO attempts (created_at, timeframe, strategy, params, status, signals, error)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (datetime.now().isoformat(), timeframe, strategy, json.dumps(params), status, signals, error),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_attempts(timeframe: str, limit: int = 500) -> pd.DataFrame:
+    """Return prior attempts for a timeframe, most recent first (for LLM memory)."""
+    conn = sqlite3.connect(DB_PATH)
+    _ensure_db(conn)
+    df = pd.read_sql_query(
+        """SELECT strategy, params, status, signals, error
+           FROM attempts WHERE timeframe = ?
+           ORDER BY created_at DESC LIMIT ?""",
+        conn,
+        params=(timeframe, limit),
+    )
+    conn.close()
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -380,12 +447,18 @@ def execute_strategies(
     timeframe: str,
     strategy_defs: list[StrategyDef],
 ) -> tuple[list[tuple[dict, pd.DataFrame]], str, str]:
-    """Write LLM-generated strategies to a file, import, and execute them.
+    """Write LLM-generated strategies to a file and execute each in isolation.
+
+    Each strategy is exec'd in its own namespace so a syntax error, NameError,
+    or runtime exception in one cannot affect its siblings. Every attempt is
+    recorded in the `attempts` table for planner memory.
 
     Returns:
         (results, data_from, data_to) — results list plus the full data date range.
     """
-    # 1. Build the strategy file
+    # 1. Write the consolidated strategy file (for inspection / archival only).
+    #    Execution happens via per-strategy exec(), not a module import, so that
+    #    a single broken strategy can't kill the whole batch at import time.
     strat_file = Path(f"strategies/strat_{timeframe}.py")
     strat_file.parent.mkdir(exist_ok=True)
 
@@ -399,32 +472,58 @@ def execute_strategies(
     for sdef in strategy_defs:
         file_lines.append(sdef["code"])
         file_lines.append("")
-
     strat_file.write_text("\n".join(file_lines))
 
-    # 2. Import the module
-    module_name = f"strat_{timeframe}"
-    spec = importlib.util.spec_from_file_location(module_name, strat_file)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = mod
-    spec.loader.exec_module(mod)
-
-    # 3. Load data once
+    # 2. Load data once
     df = load(index=index, timeframe=timeframe)
-
-    # Capture the full data date range (not signal dates)
     data_from = str(df["date"].min().date()) if not df.empty else None
     data_to = str(df["date"].max().date()) if not df.empty else None
 
-    # 4. Execute each strategy
+    # 3. Execute each strategy in an isolated namespace.
     results = []
     for sdef in strategy_defs:
-        try:
-            fn = getattr(mod, sdef["name"])
-            params, result_df = fn(df)
-            results.append((params, result_df))
-        except Exception as e:
-            print(f"[WARN] Strategy {sdef['name']} failed: {e}")
-            results.append((sdef["params"], pd.DataFrame()))  # empty result
+        params, result_df, status, error = _exec_single(sdef, [df])
+        results.append((params, result_df))
+        log_attempt(
+            timeframe=timeframe,
+            strategy=sdef["name"],
+            params=sdef.get("params", {}),
+            status=status,
+            signals=len(result_df) if not result_df.empty else 0,
+            error=error,
+        )
 
     return results, data_from, data_to
+
+
+def _exec_single(
+    sdef: StrategyDef,
+    dfs: list[pd.DataFrame],
+) -> tuple[dict, pd.DataFrame, str, str | None]:
+    """Compile + run one strategy in an isolated namespace.
+
+    Returns (params, result_df, status, error) where status ∈ {'ok',
+    'zero_signals', 'error'}. Never raises — all exceptions are caught so
+    one bad strategy never crashes the batch.
+    """
+    namespace: dict = {"pd": pd, "np": np}
+    try:
+        exec(sdef["code"], namespace)
+        fn = namespace.get(sdef["name"])
+        if not callable(fn):
+            raise RuntimeError(
+                f"function `{sdef['name']}` not defined in generated code"
+            )
+        params, result_df = fn(*dfs)
+        if not isinstance(result_df, pd.DataFrame):
+            raise TypeError(
+                f"expected DataFrame, got {type(result_df).__name__}"
+            )
+        status = "zero_signals" if result_df.empty else "ok"
+        return params, result_df, status, None
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+        print(f"[WARN] Strategy {sdef['name']} failed: {err}")
+        # Full traceback to stderr for debugging — keep console output short.
+        traceback.print_exc()
+        return sdef.get("params", {}), pd.DataFrame(), "error", err

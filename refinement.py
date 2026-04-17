@@ -7,7 +7,7 @@ from pathlib import Path
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from backtest import count_strategies, log_run, publish, query_winners, summarize
+from backtest import count_strategies, get_attempts, log_run, publish, query_winners, summarize
 from backtest_multi import execute_multi_strategies
 from config import CFG
 from graph import _parse_strategies
@@ -59,18 +59,24 @@ def _refine_once(llm: BaseChatModel, winner_descriptions: list[dict]) -> None:
     """Generate cross-timeframe strategies, execute, log, and publish."""
     prompt = Path("prompts/planner_refinement.md").read_text().replace("{n}", str(_STRATS_PER_REFINE))
 
-    # Also fetch previously tested mixed strategies to avoid repeats
-    tested = query_winners(
-        min_abs_expectancy=0, min_signals=0, timeframe="mixed", limit=200
-    )
-    tested_summary = "No mixed strategies tested yet."
-    if not tested.empty:
+    # Planner memory: every prior mixed attempt, including failures, so the
+    # LLM doesn't regenerate something that was already tried or that crashed.
+    attempts = get_attempts("mixed", limit=500)
+    tested_summary = "No mixed strategies attempted yet."
+    if not attempts.empty:
         lines = []
-        for _, row in tested.iterrows():
-            lines.append(
-                f"- {row['strategy']}: params={row['params']}, "
-                f"expectancy={row['expectancy']}%"
-            )
+        for _, row in attempts.iterrows():
+            try:
+                p = json.loads(row["params"])
+            except (TypeError, json.JSONDecodeError):
+                p = {}
+            signal = str(p.get("signal", ""))[:180]
+            if row["status"] == "error":
+                lines.append(f"- {row['strategy']} [FAILED: {row['error']}] — {signal}")
+            elif row["status"] == "zero_signals":
+                lines.append(f"- {row['strategy']} [0 signals] — {signal}")
+            else:
+                lines.append(f"- {row['strategy']} [{row['signals']} signals] — {signal}")
         tested_summary = "\n".join(lines)
 
     response = llm.invoke(

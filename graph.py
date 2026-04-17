@@ -10,9 +10,9 @@ from langgraph.graph import END, START, StateGraph
 from backtest import (
     count_strategies,
     execute_strategies,
+    get_attempts,
     log_run,
     publish,
-    query_winners,
     summarize,
 )
 from config import CFG
@@ -36,18 +36,28 @@ def _load_prompt(timeframe: str, n: int) -> str:
 
 
 def _get_tested_strategies(timeframe: str) -> str:
-    """Build a summary of already-tested strategies for this timeframe."""
-    tested = query_winners(
-        min_abs_expectancy=0, min_signals=0, timeframe=timeframe, limit=200
-    )
-    if tested.empty:
-        return "No strategies tested yet for this timeframe."
+    """Summarize prior attempts for the planner's memory.
+
+    Includes successes, zero-signal runs, and failures. Failures are marked
+    with their error so the LLM doesn't repeat the same mistake.
+    """
+    attempts = get_attempts(timeframe, limit=500)
+    if attempts.empty:
+        return "No strategies attempted yet for this timeframe."
+
     lines = []
-    for _, row in tested.iterrows():
-        lines.append(
-            f"- {row['strategy']}: params={row['params']}, "
-            f"expectancy={row['expectancy']}%, direction={row['direction']}"
-        )
+    for _, row in attempts.iterrows():
+        try:
+            params = json.loads(row["params"])
+        except (TypeError, json.JSONDecodeError):
+            params = {}
+        signal = str(params.get("signal", ""))[:180]
+        if row["status"] == "error":
+            lines.append(f"- {row['strategy']} [FAILED: {row['error']}] — {signal}")
+        elif row["status"] == "zero_signals":
+            lines.append(f"- {row['strategy']} [0 signals] — {signal}")
+        else:
+            lines.append(f"- {row['strategy']} [{row['signals']} signals] — {signal}")
     return "\n".join(lines)
 
 

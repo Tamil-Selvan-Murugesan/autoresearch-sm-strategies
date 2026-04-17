@@ -1,13 +1,10 @@
 """Multi-timeframe backtest engine for refinement strategies."""
 
-import importlib
-import importlib.util
-import sys
 from pathlib import Path
 
 import pandas as pd
 
-from backtest import load
+from backtest import _exec_single, load, log_attempt
 from config import CFG
 
 _TIMEFRAMES = CFG["timeframes"]
@@ -24,13 +21,14 @@ def execute_multi_strategies(
 ) -> tuple[list[tuple[dict, pd.DataFrame]], str, str]:
     """Execute refinement strategies that can access all timeframes.
 
-    Each strategy function receives 3 DataFrames:
-        def strategy(df_5min, df_daily, df_weekly) -> (params, result_df)
+    Each strategy receives one DataFrame per configured timeframe (in config order).
+    Strategies run in isolated namespaces so one bad strategy doesn't kill the
+    batch. Every attempt is recorded under timeframe='mixed' for planner memory.
 
     Returns:
         (results, data_from, data_to) — results list plus the widest data date range.
     """
-    # 1. Write strategy file
+    # 1. Write consolidated file (for inspection only; execution is per-strategy).
     strat_file = Path("strategies/strat_mixed.py")
     strat_file.parent.mkdir(exist_ok=True)
 
@@ -44,20 +42,10 @@ def execute_multi_strategies(
     for sdef in strategy_defs:
         file_lines.append(sdef["code"])
         file_lines.append("")
-
     strat_file.write_text("\n".join(file_lines))
 
-    # 2. Import
-    module_name = "strat_mixed"
-    spec = importlib.util.spec_from_file_location(module_name, strat_file)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = mod
-    spec.loader.exec_module(mod)
-
-    # 3. Load all timeframes once
+    # 2. Load all timeframes once; compute widest data range.
     data = load_all(index)
-
-    # Compute the widest data range across all timeframes
     all_dates = []
     for df in data.values():
         if not df.empty:
@@ -66,16 +54,19 @@ def execute_multi_strategies(
     data_from = str(min(all_dates).date()) if all_dates else None
     data_to = str(max(all_dates).date()) if all_dates else None
 
-    # 4. Execute — each strategy gets all DataFrames
+    # 3. Execute each strategy in isolation.
     dfs = [data[tf] for tf in _TIMEFRAMES]
     results = []
     for sdef in strategy_defs:
-        try:
-            fn = getattr(mod, sdef["name"])
-            params, result_df = fn(*dfs)
-            results.append((params, result_df))
-        except Exception as e:
-            print(f"[WARN] Strategy {sdef['name']} failed: {e}")
-            results.append((sdef["params"], pd.DataFrame()))
+        params, result_df, status, error = _exec_single(sdef, dfs)
+        results.append((params, result_df))
+        log_attempt(
+            timeframe="mixed",
+            strategy=sdef["name"],
+            params=sdef.get("params", {}),
+            status=status,
+            signals=len(result_df) if not result_df.empty else 0,
+            error=error,
+        )
 
     return results, data_from, data_to

@@ -17,7 +17,7 @@ timeframes:
 strategies_per_iteration: 1
 
 # Stop when each timeframe reaches this many logged strategies
-max_strategies_per_timeframe: 10
+max_strategies_per_timeframe: 5
 
 # ── Refinement loop ─────────────────────────────────────────────────
 
@@ -48,7 +48,7 @@ data_dirs:
   daily: "data/daily"
   weekly: "data/weekly"
 
-db_path: "logs/backtest-1.db"
+db_path: "logs/backtest-2.db"
 
 # ── Git / publish ────────────────────────────────────────────────────
 
@@ -60,5 +60,5 @@ branch_prefix: "experiments-1"
 llm:
   provider: "azure_openai"       # azure_openai | openai | anthropic
   model: "gpt-4.1"               # model or deployment name
-  temperature: 0.7
+  temperature: 1
   api_version: "2024-12-01-preview"  # Azure-only
