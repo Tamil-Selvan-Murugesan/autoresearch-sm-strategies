@@ -3,25 +3,43 @@
 import pandas as pd
 import numpy as np
 
-def nr7_then_range_expansion(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+import numpy as np
+import pandas as pd
+
+def bullish_engulfing_open_drive(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     params = {
-        "signal": "Signal is True on bars where the previous bar is an NR7 (its high-low range is the narrowest of the past 7 bars), AND the current bar's range is at least 2x the prior bar's range (range expansion). Measures forward returns from bars after expansion.",
-        "field": "high, low",
-        "nrN_lookback": 7,
-        "expansion_mult": 2.0,
-        "forward_bars": [1, 5]
+        "signal": "True on the first bullish engulfing pattern within the first 30 minutes (bars 1-6) of the session: previous bar is red (close < open), current bar is green (close > open), and current bar's body fully engulfs the prior body's high/low (open < prev_close and close > prev_open).",
+        "fields": "open, close (first 6 bars of each day)",
+        "engulf_lookback_bars": 1,
+        "session_bars": 6,
+        "forward_bars": [1, 5, 10],
     }
-    
-    rng = df['high'] - df['low']
-    nr7 = rng.rolling(7, min_periods=7).apply(lambda x: x[-1] == np.min(x), raw=True).astype(bool)
-    nr7_prev = nr7.shift(1)
-    # For bars where previous is NR7 and current range expansion
-    rng_prev = rng.shift(1)
-    expansion = rng >= (2.0 * rng_prev)
-    mask = nr7_prev & expansion
-    result = df.loc[mask, ['date', 'close']].copy()
-    # Forward returns
-    for bars in params["forward_bars"]:
-        result[f"fwd_{bars}d"] = df['close'].shift(-bars).loc[mask].values / result['close'] * 100 - 100
+    dff = df.copy()
+    # Assign an intraday bar number per session
+dff["date_only"] = dff["date"].dt.floor("D")
+dff["bar_idx"] = dff.groupby("date_only").cumcount()
+
+    # Previous bar values
+    prev_open = dff["open"].shift(1)
+    prev_close = dff["close"].shift(1)
+
+    # Engulfing logic (bullish):
+    # prev bar is red, current bar is green,
+    # current open < prev close and current close > prev open
+    cond_prev_red = prev_close < prev_open
+    cond_curr_green = dff["close"] > dff["open"]
+    cond_engulf = (dff["open"] < prev_close) & (dff["close"] > prev_open)
+    # Only bars within the first 6 of the session
+    in_session = dff["bar_idx"].between(1, 5)  # bar number 1~5 (second to sixth bar)
+    mask = cond_prev_red & cond_curr_green & cond_engulf & in_session
+
+    # Keep only the first such signal per day (open-drive logic: only one per session)
+    mask_first = mask & (~mask.groupby(dff["date_only"]).cummax().shift(fill_value=False))
+
+    result = dff.loc[mask_first, ["date", "close"]].copy()
+    for N in params["forward_bars"]:
+        result[f"fwd_{N}d"] = (
+            dff["close"].shift(-N).loc[result.index].values / result["close"] * 100 - 100
+        )
     return params, result
 
