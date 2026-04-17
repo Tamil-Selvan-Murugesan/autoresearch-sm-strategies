@@ -3,40 +3,42 @@
 import pandas as pd
 import numpy as np
 
-def weekly_hammer_at_4wk_low(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+def nr4_weekly_range_expansion(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     params = {
-        "signal": "Weekly hammer candle (long lower shadow, small body) that forms at the lowest close of the past 4 weeks. Long entry when current week's close is at 4-week low AND the weekly candle has hammer characteristics.",
-        "field": "open, high, low, close",
-        "hammer_body_pct": 0.25,
-        "hammer_shadow_pct": 0.5,
-        "lookback_low_weeks": 4,
+        "signal": "Detects when the current weekly bar has the narrowest range of the last 4 weeks (NR4), then the following week breaks to a range at least 1.5x the 10-week average range. Returns are measured starting after the range expansion week.",
+        "field": "high, low, close",
+        "nr4_lookback": 4,
+        "range_expansion_multiplier": 1.5,
+        "range_average_lookback": 10,
         "forward_weeks": [1, 2, 4]
     }
 
-    # Hammer definition:
-    # - Small body: abs(close - open) / (high - low) <= hammer_body_pct
-    # - Long lower shadow: (min(open, close) - low) / (high - low) >= hammer_shadow_pct
-    # - upper shadow not excessively long (optional, but not enforced here)
+    rng = df["high"] - df["low"]
+    # Find NR4 weeks: range is minimum of 4-week window ending at this week
+    nr4 = rng == rng.rolling(params["nr4_lookback"]).min()
+    # Only consider NR4 weeks that are not at the very beginning
+    nr4_shift = nr4.shift(0)
 
-    range_ = df["high"] - df["low"]
-    body = (df["close"] - df["open"]).abs()
+    # Next week range expansion:
+    avg_rng = rng.rolling(params["range_average_lookback"]).mean()
+    next_rng = rng.shift(-1)
+    next_avg_rng = avg_rng.shift(-1)
+    expansion = next_rng >= params["range_expansion_multiplier"] * next_avg_rng
 
-    body_pct = body / range_
-    lower_shadow = (df[["open", "close"]].min(axis=1) - df["low"]) / range_
+    # Signal mask: NR4 week followed by range expansion week
+    signal_mask = nr4_shift & expansion
+    signal_idx = signal_mask[signal_mask].index
+    # Returns start from week AFTER the range expansion week
+    result_idx = signal_idx + 1  # But index is not necessarily integer, get proper rows
+    signal_rows = df.index.isin(result_idx)
 
-    hammer_mask = (body_pct <= params["hammer_body_pct"]) & (lower_shadow >= params["hammer_shadow_pct"]) & (range_ > 0)
+    # For those indices, get date and close
+    result = df.loc[signal_rows, ["date", "close"]].copy()
+    start_idx = result.index
 
-    # Lowest close of past N weeks (including current)
-    close_4wk_min = df["close"].rolling(params["lookback_low_weeks"]).min()
-    at_4wk_low_mask = df["close"] == close_4wk_min
-
-    signal_mask = hammer_mask & at_4wk_low_mask
-
-    result = df.loc[signal_mask, ["date", "close"]].copy()
-
-    result["fwd_1d"] = df["close"].shift(-1).loc[signal_mask] / df["close"].loc[signal_mask] * 100 - 100
-    result["fwd_2d"] = df["close"].shift(-2).loc[signal_mask] / df["close"].loc[signal_mask] * 100 - 100
-    result["fwd_4d"] = df["close"].shift(-4).loc[signal_mask] / df["close"].loc[signal_mask] * 100 - 100
+    # Compute forward returns
+    for fw in params["forward_weeks"]:
+        result[f"fwd_{fw}d"] = (df["close"].shift(-fw).loc[start_idx] / df["close"].loc[start_idx]) * 100 - 100
 
     return params, result
 
