@@ -17,7 +17,7 @@ timeframes:
 strategies_per_iteration: 1
 
 # Stop when each timeframe reaches this many logged strategies
-max_strategies_per_timeframe: 5
+max_strategies_per_timeframe: 3
 
 # ── Refinement loop ─────────────────────────────────────────────────
 

@@ -64,6 +64,25 @@ def load(index: str = "NIFTY", timeframe: str = "daily") -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
+def _add_col(conn: sqlite3.Connection, table: str, col: str, ddl: str) -> bool:
+    """Idempotent ALTER TABLE ADD COLUMN that tolerates concurrent callers.
+
+    Returns True if this call actually added the column, False if it already
+    existed. Swallows the "duplicate column" OperationalError that happens
+    when two connections race the migration.
+    """
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if col in cols:
+        return False
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+        return True
+    except sqlite3.OperationalError as e:
+        if "duplicate column" in str(e).lower():
+            return False
+        raise
+
+
 def _ensure_db(conn: sqlite3.Connection) -> None:
     """Create tables if fresh DB, then migrate columns for existing DBs."""
     # Create tables (IF NOT EXISTS — safe on existing DBs)
@@ -112,19 +131,17 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
         );
     """)
 
-    # Migrate: add new columns to existing tables
-    run_cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
-    if "iteration" not in run_cols:
-        conn.execute("ALTER TABLE runs ADD COLUMN iteration INTEGER")
-    if "strategies" not in run_cols:
-        # JSON array of {"name", "params", "code"} for every strategy in the
-        # batch. Lets us re-inspect the exact code that produced a given row
-        # in `results` after the generated .py file has been overwritten.
-        conn.execute("ALTER TABLE runs ADD COLUMN strategies TEXT")
-
-    res_cols = {row[1] for row in conn.execute("PRAGMA table_info(results)").fetchall()}
-    if "timeframe" not in res_cols:
-        conn.execute("ALTER TABLE results ADD COLUMN timeframe TEXT")
+    # Migrate: add new columns to existing tables. `_add_col` tolerates races
+    # between concurrent connections (exec_* nodes migrate in parallel) — the
+    # PRAGMA check isn't atomic with the ALTER, so two threads can both decide
+    # to add the column, and the second one raises "duplicate column".
+    _add_col(conn, "runs", "iteration", "INTEGER")
+    # `runs.strategies` = JSON array of {name, params, code} for every strategy
+    # in the batch. Only persisted copy of the LLM-generated source (the
+    # strategies/strat_<tf>.py file is overwritten each iteration).
+    _add_col(conn, "runs", "strategies", "TEXT")
+    added_timeframe = _add_col(conn, "results", "timeframe", "TEXT")
+    if added_timeframe:
         # Backfill from runs table for old rows
         conn.execute("""
             UPDATE results SET timeframe = (
