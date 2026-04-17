@@ -18,6 +18,7 @@ from state import StrategyDef
 
 DB_PATH = CFG["db_path"]
 DATA_DIRS = CFG["data_dirs"]
+PUBLISH_ENABLED = CFG.get("publish_to_github", True)
 
 _prefix = CFG["branch_prefix"]
 BRANCH_MAP = {tf: f"{_prefix}/{tf}" for tf in CFG["timeframes"]}
@@ -378,7 +379,13 @@ def publish(
     tree containing only the files we want to archive, creates a commit via
     `git commit-tree` parented on the remote branch's current tip (or orphaned
     if the branch doesn't exist yet), and pushes that commit directly.
+
+    Skipped entirely when `publish_to_github: false` in config.yaml.
     """
+    if not PUBLISH_ENABLED:
+        print(f"[publish/{timeframe}] disabled (publish_to_github=false), skipping.")
+        return
+
     branch = BRANCH_MAP[timeframe]
     remote_ref = f"refs/heads/{branch}"
 

@@ -61,6 +61,10 @@ db_path: "logs/backtest-2.db"
 
 # ── Git / publish ────────────────────────────────────────────────────
 
+# Master switch. When false, publish() is a no-op — nothing is committed or
+# pushed anywhere. Local DB and strategies/*.py still update as usual.
+publish_to_github: true
+
 # Branch prefix — each timeframe pushes to <branch_prefix>/<timeframe>
 branch_prefix: "experiments-1"
 
