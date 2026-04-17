@@ -3,38 +3,47 @@
 import pandas as pd
 import numpy as np
 
-def nr7_then_range_expansion_breakout(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+def consecutive_inside_day_breakout(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     params = {
-        "signal": "Breakout after NR7: today is narrowest range in 7 days (NR7), and tomorrow's range is at least 1.8x today's range. Signal direction is tomorrow's close > open (up breakout) or close < open (down breakout). Measure fwd returns from breakout day.",
-        "field": "open, high, low, close",
-        "nr_days": 7,
-        "expansion_multiplier": 1.8,
-        "forward_days": [1, 3]
+        "signal": "Detects 2 consecutive inside days (each day has high < previous high and low > previous low). Signals a breakout if the following day closes outside both inside days' ranges (above the highest high or below the lowest low). Measures forward returns from breakout bar.",
+        "field": "high, low, close",
+        "inside_day_lookback": 2,
+        "breakout_days_ahead": 1,
+        "forward_days": [1, 2, 5],
     }
-    
-    rng = df['high'] - df['low']
-    # NR7: today's range is minimum of rolling 7 days (including today)
-    nr7_mask = rng == rng.rolling(params['nr_days'], min_periods=params['nr_days']).min()
-
-    # Tomorrow's range
-    rng_tomorrow = rng.shift(-1)  # aligns with today's signal
-    nr7_today_rng = rng  # aligns
-    
-    expansion = rng_tomorrow >= params['expansion_multiplier'] * nr7_today_rng
-
-    # Tomorrow's direction: breakout up if close > open, down if close < open
-    up_breakout = df['close'].shift(-1) > df['open'].shift(-1)
-    down_breakout = df['close'].shift(-1) < df['open'].shift(-1)
-
-    # Signal: NR7 today, then expansion tomorrow, then clear directional bar tomorrow
-    mask = nr7_mask & expansion & (up_breakout | down_breakout)
-
-    # Move the mask FORWARD one day to align to the breakout bar (i.e., select the expansion day)
-    breakout_mask = mask.shift(1).fillna(False)
-    
+    df = df.copy()
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    # Inside day for t: high < prev high AND low > prev low
+    inside_1 = (high < high.shift(1)) & (low > low.shift(1))
+    # t-1 inside, t is inside relative to t-1, t-2
+    inside2 = inside_1 & inside_1.shift(1)
+    # Mask for day t where t-1 and t-2 are consecutive inside days
+    inside_seq_mask = inside2.shift(1)
+    # For each such sequence, consider the breakout at day t (i.e., right after 2 inside days)
+    idx = df.index
+    breakout_indices = idx[inside_seq_mask]
+    # Gather the highest high/lowest low during the 2 inside days
+    hh = high.shift(1).rolling(2, min_periods=2).max()
+    ll = low.shift(1).rolling(2, min_periods=2).min()
+    # For day t, check if close[t] > highest high of 2 inside days OR close[t] < lowest low
+    # The sequences
+    breakout_mask = pd.Series(False, index=df.index)
+    for i in breakout_indices:
+        # i is the index of bar after inside days
+        # Find row num
+        pos = df.index.get_loc(i)
+        # Get corresponding levels from inside days (t-2, t-1)
+        range_high = max(high.iloc[pos-2], high.iloc[pos-1])
+        range_low = min(low.iloc[pos-2], low.iloc[pos-1])
+        cl = close.iloc[pos]
+        if cl > range_high or cl < range_low:
+            breakout_mask.iloc[pos] = True
     result = df.loc[breakout_mask, ["date", "close"]].copy()
-    result["fwd_1d"] = df["close"].shift(-1) / df["close"] * 100 - 100
-    result["fwd_3d"] = df["close"].shift(-3) / df["close"] * 100 - 100
-    
+    # Forward returns
+    result["fwd_1d"] = df["close"].shift(-1).loc[breakout_mask].values / result["close"] * 100 - 100
+    result["fwd_2d"] = df["close"].shift(-2).loc[breakout_mask].values / result["close"] * 100 - 100
+    result["fwd_5d"] = df["close"].shift(-5).loc[breakout_mask].values / result["close"] * 100 - 100
     return params, result
 
