@@ -3,30 +3,31 @@
 import pandas as pd
 import numpy as np
 
-def three_down_days_mean_reversion(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+def bearish_engulfing_signal(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     params = {
-        "signal": "Signal is True when there are 3 consecutive down closes (each day's close < previous day's close) and the 3-day cumulative return is below -2% (i.e., sharp short-term pullback).",
-        "field": "close",
-        "consecutive_down_days": 3,
-        "cumulative_return_threshold": -2.0,
-        "forward_days": [1, 2, 5],
+        "signal": "Bearish engulfing pattern: Day N opens higher and closes lower than previous day, and entire body (open to close) of day N fully engulfs prior day's body (including open and close). Measures forward returns after pattern appears.",
+        "field": "open, close",
+        "engulfing_criteria": "today's open > yesterday's close and today's close < yesterday's open, and today's real body fully engulfs previous day's real body",
+        "forward_days": [1, 5],
     }
-
-    # Compute consecutive down closes
-    down_1 = df["close"].diff(1) < 0
-    down_2 = down_1.shift(1)
-    down_3 = down_1.shift(2)
-    three_down = down_1 & down_2 & down_3
-
-    # Compute 3-day cumulative return
-    ret_3d = df["close"].pct_change(3) * 100
-    sharp_pullback = ret_3d < params["cumulative_return_threshold"]
-
-    mask = three_down & sharp_pullback
-
+    o = df['open']
+    c = df['close']
+    o_prev = o.shift(1)
+    c_prev = c.shift(1)
+    
+    # Today's body direction: opens above prior close, closes below prior open
+    direction_cond = (o > c_prev) & (c < o_prev)
+    
+    # Today's body fully engulfs prior body's range (open and close)
+    today_body_max = np.maximum(o, c)
+    today_body_min = np.minimum(o, c)
+    prev_body_max = np.maximum(o_prev, c_prev)
+    prev_body_min = np.minimum(o_prev, c_prev)
+    engulf_cond = (today_body_max >= prev_body_max) & (today_body_min <= prev_body_min)
+    
+    mask = direction_cond & engulf_cond
     result = df.loc[mask, ["date", "close"]].copy()
-    for i in params["forward_days"]:
-        result[f"fwd_{i}d"] = df["close"].shift(-i).loc[mask].values / df["close"].loc[mask].values * 100 - 100
-
+    result["fwd_1d"] = df["close"].shift(-1).loc[mask].values / df["close"].loc[mask].values * 100 - 100
+    result["fwd_5d"] = df["close"].shift(-5).loc[mask].values / df["close"].loc[mask].values * 100 - 100
     return params, result
 
