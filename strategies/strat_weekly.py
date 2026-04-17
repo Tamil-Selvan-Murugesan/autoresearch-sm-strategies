@@ -3,42 +3,34 @@
 import pandas as pd
 import numpy as np
 
-def nr4_weekly_range_expansion(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+def weekly_failed_breakout_long(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     params = {
-        "signal": "Detects when the current weekly bar has the narrowest range of the last 4 weeks (NR4), then the following week breaks to a range at least 1.5x the 10-week average range. Returns are measured starting after the range expansion week.",
-        "field": "high, low, close",
-        "nr4_lookback": 4,
-        "range_expansion_multiplier": 1.5,
-        "range_average_lookback": 10,
+        "signal": "Weekly failed breakout: This week's high breaks prior 20-week high, but weekly close falls back below prior week's high. Long entry on the week following signal.",
+        "field": "high, close",
+        "lookback_high": 20,
+        "close_below_prior_high": True,
         "forward_weeks": [1, 2, 4]
     }
 
-    rng = df["high"] - df["low"]
-    # Find NR4 weeks: range is minimum of 4-week window ending at this week
-    nr4 = rng == rng.rolling(params["nr4_lookback"]).min()
-    # Only consider NR4 weeks that are not at the very beginning
-    nr4_shift = nr4.shift(0)
+    # Compute prior 20-week rolling high (excluding current week)
+    prior_20w_high = df["high"].shift(1).rolling(window=20, min_periods=20).max()
+    # Prior week's high (for close comparison)
+    prior_high = df["high"].shift(1)
 
-    # Next week range expansion:
-    avg_rng = rng.rolling(params["range_average_lookback"]).mean()
-    next_rng = rng.shift(-1)
-    next_avg_rng = avg_rng.shift(-1)
-    expansion = next_rng >= params["range_expansion_multiplier"] * next_avg_rng
+    # Conditions:
+    # 1. This week's high breaks prior 20-week high
+    breakout = df["high"] > prior_20w_high
+    # 2. This week's close falls back below prior week's high
+    close_below_prior = df["close"] < prior_high
 
-    # Signal mask: NR4 week followed by range expansion week
-    signal_mask = nr4_shift & expansion
-    signal_idx = signal_mask[signal_mask].index
-    # Returns start from week AFTER the range expansion week
-    result_idx = signal_idx + 1  # But index is not necessarily integer, get proper rows
-    signal_rows = df.index.isin(result_idx)
+    # Signal: both conditions met
+    signal_mask = breakout & close_below_prior
+    # Shift signal to anticipate entry on next week's open (since candle completes at close)
+    mask = signal_mask.shift(1).fillna(False)
 
-    # For those indices, get date and close
-    result = df.loc[signal_rows, ["date", "close"]].copy()
-    start_idx = result.index
-
-    # Compute forward returns
-    for fw in params["forward_weeks"]:
-        result[f"fwd_{fw}d"] = (df["close"].shift(-fw).loc[start_idx] / df["close"].loc[start_idx]) * 100 - 100
+    result = df.loc[mask, ["date", "close"]].copy()
+    result["fwd_1d"] = df["close"].shift(-1).loc[mask].values / result["close"] * 100 - 100
+    result["fwd_2d"] = df["close"].shift(-2).loc[mask].values / result["close"] * 100 - 100
+    result["fwd_4d"] = df["close"].shift(-4).loc[mask].values / result["close"] * 100 - 100
 
     return params, result
-
