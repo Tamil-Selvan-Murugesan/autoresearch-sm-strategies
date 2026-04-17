@@ -3,31 +3,38 @@
 import pandas as pd
 import numpy as np
 
-def bearish_engulfing_signal(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+def nr7_then_range_expansion_breakout(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     params = {
-        "signal": "Bearish engulfing pattern: Day N opens higher and closes lower than previous day, and entire body (open to close) of day N fully engulfs prior day's body (including open and close). Measures forward returns after pattern appears.",
-        "field": "open, close",
-        "engulfing_criteria": "today's open > yesterday's close and today's close < yesterday's open, and today's real body fully engulfs previous day's real body",
-        "forward_days": [1, 5],
+        "signal": "Breakout after NR7: today is narrowest range in 7 days (NR7), and tomorrow's range is at least 1.8x today's range. Signal direction is tomorrow's close > open (up breakout) or close < open (down breakout). Measure fwd returns from breakout day.",
+        "field": "open, high, low, close",
+        "nr_days": 7,
+        "expansion_multiplier": 1.8,
+        "forward_days": [1, 3]
     }
-    o = df['open']
-    c = df['close']
-    o_prev = o.shift(1)
-    c_prev = c.shift(1)
     
-    # Today's body direction: opens above prior close, closes below prior open
-    direction_cond = (o > c_prev) & (c < o_prev)
+    rng = df['high'] - df['low']
+    # NR7: today's range is minimum of rolling 7 days (including today)
+    nr7_mask = rng == rng.rolling(params['nr_days'], min_periods=params['nr_days']).min()
+
+    # Tomorrow's range
+    rng_tomorrow = rng.shift(-1)  # aligns with today's signal
+    nr7_today_rng = rng  # aligns
     
-    # Today's body fully engulfs prior body's range (open and close)
-    today_body_max = np.maximum(o, c)
-    today_body_min = np.minimum(o, c)
-    prev_body_max = np.maximum(o_prev, c_prev)
-    prev_body_min = np.minimum(o_prev, c_prev)
-    engulf_cond = (today_body_max >= prev_body_max) & (today_body_min <= prev_body_min)
+    expansion = rng_tomorrow >= params['expansion_multiplier'] * nr7_today_rng
+
+    # Tomorrow's direction: breakout up if close > open, down if close < open
+    up_breakout = df['close'].shift(-1) > df['open'].shift(-1)
+    down_breakout = df['close'].shift(-1) < df['open'].shift(-1)
+
+    # Signal: NR7 today, then expansion tomorrow, then clear directional bar tomorrow
+    mask = nr7_mask & expansion & (up_breakout | down_breakout)
+
+    # Move the mask FORWARD one day to align to the breakout bar (i.e., select the expansion day)
+    breakout_mask = mask.shift(1).fillna(False)
     
-    mask = direction_cond & engulf_cond
-    result = df.loc[mask, ["date", "close"]].copy()
-    result["fwd_1d"] = df["close"].shift(-1).loc[mask].values / df["close"].loc[mask].values * 100 - 100
-    result["fwd_5d"] = df["close"].shift(-5).loc[mask].values / df["close"].loc[mask].values * 100 - 100
+    result = df.loc[breakout_mask, ["date", "close"]].copy()
+    result["fwd_1d"] = df["close"].shift(-1) / df["close"] * 100 - 100
+    result["fwd_3d"] = df["close"].shift(-3) / df["close"] * 100 - 100
+    
     return params, result
 
