@@ -3,43 +3,40 @@
 import pandas as pd
 import numpy as np
 
-def two_week_bullish_engulfing_with_range_contraction(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+def weekly_hammer_at_4wk_low(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     params = {
-        "signal": "Signal is generated when a bullish engulfing pattern occurs: current week's body (close > open) completely engulfs previous week's body (current open < previous close and current close > previous open). Additionally, the current week's range (high-low) is less than the average range of the prior 8 weeks (range contraction filter).",
+        "signal": "Weekly hammer candle (long lower shadow, small body) that forms at the lowest close of the past 4 weeks. Long entry when current week's close is at 4-week low AND the weekly candle has hammer characteristics.",
         "field": "open, high, low, close",
-        "engulfing_lookback": 1,
-        "range_contraction_lookback": 8,
-        "direction": "bullish reversal",
+        "hammer_body_pct": 0.25,
+        "hammer_shadow_pct": 0.5,
+        "lookback_low_weeks": 4,
         "forward_weeks": [1, 2, 4]
     }
 
-    # Bullish Engulfing: current body positive, previous body negative or smaller, body completely "engulfs" prior week
-    prev_open = df["open"].shift(1)
-    prev_close = df["close"].shift(1)
-    prev_body_low = np.minimum(prev_open, prev_close)
-    prev_body_high = np.maximum(prev_open, prev_close)
+    # Hammer definition:
+    # - Small body: abs(close - open) / (high - low) <= hammer_body_pct
+    # - Long lower shadow: (min(open, close) - low) / (high - low) >= hammer_shadow_pct
+    # - upper shadow not excessively long (optional, but not enforced here)
 
-    # Current body
-    curr_body_low = np.minimum(df["open"], df["close"])
-    curr_body_high = np.maximum(df["open"], df["close"])
-    bullish_engulfing = (
-        (df["close"] > df["open"]) &  # current bullish
-        (prev_close < prev_open) &     # previous bearish
-        (df["open"] < prev_close) &   # opens below prev close
-        (df["close"] > prev_open) &   # closes above prev open
-        (curr_body_low <= prev_body_low) & (curr_body_high >= prev_body_high) # current body fully engulfs prev
-    )
+    range_ = df["high"] - df["low"]
+    body = (df["close"] - df["open"]).abs()
 
-    # Range contraction: current week range < mean of prev 8 weeks (excluding current week)
-    curr_range = df["high"] - df["low"]
-    avg_prior8_range = curr_range.shift(1).rolling(window=8).mean()
-    range_contraction = curr_range < avg_prior8_range
+    body_pct = body / range_
+    lower_shadow = (df[["open", "close"]].min(axis=1) - df["low"]) / range_
 
-    mask = bullish_engulfing & range_contraction
-    result = df.loc[mask, ["date", "close"]].copy()
+    hammer_mask = (body_pct <= params["hammer_body_pct"]) & (lower_shadow >= params["hammer_shadow_pct"]) & (range_ > 0)
 
-    for w in [1, 2, 4]:
-        result[f"fwd_{w}d"] = df["close"].shift(-w).loc[mask].values / df["close"].loc[mask].values * 100 - 100
+    # Lowest close of past N weeks (including current)
+    close_4wk_min = df["close"].rolling(params["lookback_low_weeks"]).min()
+    at_4wk_low_mask = df["close"] == close_4wk_min
+
+    signal_mask = hammer_mask & at_4wk_low_mask
+
+    result = df.loc[signal_mask, ["date", "close"]].copy()
+
+    result["fwd_1d"] = df["close"].shift(-1).loc[signal_mask] / df["close"].loc[signal_mask] * 100 - 100
+    result["fwd_2d"] = df["close"].shift(-2).loc[signal_mask] / df["close"].loc[signal_mask] * 100 - 100
+    result["fwd_4d"] = df["close"].shift(-4).loc[signal_mask] / df["close"].loc[signal_mask] * 100 - 100
 
     return params, result
 
