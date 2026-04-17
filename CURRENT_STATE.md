@@ -168,13 +168,16 @@ Single SQLite file at `db_path` (config). Migrations are additive and handled by
 
 ```
 runs                          one row per log_run() call (one batch of strategies)
-├── run_id   (PK)
-├── run_at   TEXT (ISO)
-├── iteration INT             main-loop iteration number; NULL for refinement runs
-├── index_name TEXT           "NIFTY"
-├── timeframe  TEXT           "5min" | "daily" | "weekly" | "mixed"
-├── data_from  TEXT           full range of the source parquet (not signal dates)
-└── data_to    TEXT
+├── run_id     (PK)
+├── run_at     TEXT (ISO)
+├── iteration  INT             main-loop iteration number; NULL for refinement runs
+├── index_name TEXT            "NIFTY"
+├── timeframe  TEXT            "5min" | "daily" | "weekly" | "mixed"
+├── data_from  TEXT            full range of the source parquet (not signal dates)
+├── data_to    TEXT
+└── strategies TEXT            JSON: [{"name", "params", "code"}, ...] for every strategy in this batch.
+                               Only persisted copy of the LLM-generated source —
+                               strategies/strat_<tf>.py is overwritten each iteration.
 
 results                       one row per (strategy, horizon) pair
 ├── id        (PK)

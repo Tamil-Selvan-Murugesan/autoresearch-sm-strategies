@@ -116,6 +116,11 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
     run_cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
     if "iteration" not in run_cols:
         conn.execute("ALTER TABLE runs ADD COLUMN iteration INTEGER")
+    if "strategies" not in run_cols:
+        # JSON array of {"name", "params", "code"} for every strategy in the
+        # batch. Lets us re-inspect the exact code that produced a given row
+        # in `results` after the generated .py file has been overwritten.
+        conn.execute("ALTER TABLE runs ADD COLUMN strategies TEXT")
 
     res_cols = {row[1] for row in conn.execute("PRAGMA table_info(results)").fetchall()}
     if "timeframe" not in res_cols:
@@ -188,6 +193,7 @@ def log_run(
     iteration: int | None = None,
     data_from: str | None = None,
     data_to: str | None = None,
+    strategy_defs: list[StrategyDef] | None = None,
 ) -> int:
     """Write results to SQLite. Returns the run_id.
 
@@ -195,16 +201,29 @@ def log_run(
         data_from/data_to: Full date range of the source data (not signal dates).
                            Pass these from the loaded DataFrame to get accurate ranges.
         iteration: Main loop iteration number, or None for refinement runs.
+        strategy_defs: LLM-generated strategy defs (name/params/code). Serialized
+                       as JSON on the runs row so each result row can be traced
+                       back to its source code after the generated .py file is
+                       overwritten by the next batch.
     """
     run_time = datetime.now().isoformat()
+
+    strategies_json = None
+    if strategy_defs:
+        strategies_json = json.dumps(
+            [
+                {"name": s["name"], "params": s.get("params", {}), "code": s.get("code", "")}
+                for s in strategy_defs
+            ]
+        )
 
     conn = sqlite3.connect(DB_PATH)
     _ensure_db(conn)
 
     cur = conn.execute(
-        """INSERT INTO runs (run_at, iteration, index_name, timeframe, data_from, data_to)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (run_time, iteration, index, timeframe, data_from, data_to),
+        """INSERT INTO runs (run_at, iteration, index_name, timeframe, data_from, data_to, strategies)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (run_time, iteration, index, timeframe, data_from, data_to, strategies_json),
     )
     run_id = cur.lastrowid
 

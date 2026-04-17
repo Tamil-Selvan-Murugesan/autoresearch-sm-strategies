@@ -147,6 +147,7 @@ def make_execute_and_log_node(timeframe: str):
         run_id = log_run(
             _INDEX, timeframe, strategy_names, results,
             iteration=iteration, data_from=data_from, data_to=data_to,
+            strategy_defs=pending,
         )
         print(f"[exec/{timeframe}] iter={iteration} run_id={run_id} with {len(strategy_names)} strategies.")
 

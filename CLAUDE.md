@@ -62,6 +62,8 @@ A module-level `threading.Lock` (`_git_lock`) serializes all git operations beca
 
 `_ensure_db()` runs on every connect. It creates tables if absent, uses `PRAGMA table_info` + `ALTER TABLE` to add new columns on existing DBs, and backfills the denormalized `timeframe` column on `results` from the `runs` table. `count_strategies()` and `query_winners()` rely on `results.timeframe` (no join needed for filtering). The `strategies_per_refinement` runs write `timeframe='mixed'` without an `iteration`.
 
+`runs.strategies` holds a JSON array `[{name, params, code}, ...]` for every strategy in the batch. This is the only persisted source of the generated code — `strategies/strat_<tf>.py` is overwritten every iteration — so to inspect how a specific `results` row was computed: `SELECT strategies FROM runs WHERE run_id = <x>` and parse the JSON.
+
 ### Config
 
 All tunables live in `config.yaml` (loaded once by `config.py` as `CFG`). Module-level constants in `backtest.py`, `graph.py`, `refinement.py` are derived from `CFG` at import time — changing config requires a process restart. `BRANCH_MAP` in `backtest.py` is built from `branch_prefix` + `timeframes` + a hardcoded `"mixed"` entry.

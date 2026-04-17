@@ -104,6 +104,7 @@ def _refine_once(llm: BaseChatModel, winner_descriptions: list[dict]) -> None:
     log_run(
         _INDEX, "mixed", strategy_names, results,
         data_from=data_from, data_to=data_to,
+        strategy_defs=strategy_defs,
     )
 
     # Publish to GitHub
