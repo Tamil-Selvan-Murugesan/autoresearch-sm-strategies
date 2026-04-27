@@ -3,15 +3,67 @@
 import pandas as pd
 import numpy as np
 
-def broken_syntax(df):
-    return (],  # syntax error
+def power_bar_with_prior_compression(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+    import numpy as np
+    import pandas as pd
 
-def broken_runtime(df):
-    return df.loc[[999999999]], df
+    params = {
+        "signal": "Power bar (range>1.5*ATR14, body/range>=0.7, close in top 20% of range, bullish) following 5-day compression where avg 5-day range is in bottom 25th percentile of last 100 days.",
+        "field": "open, high, low, close",
+        "compression_window": 5,
+        "compression_lookback_percentile_window": 100,
+        "compression_percentile_threshold": 0.25,
+        "atr_window": 14,
+        "range_multiplier": 1.5,
+        "body_to_range_min": 0.7,
+        "close_position_min": 0.8,
+        "direction": "bullish (close > open)",
+        "forward_days": [1, 3, 5, 10],
+    }
 
-def good_one(df):
-    params = {'signal': 'working'}
-    out = df.head(3).copy()
-    out['fwd_1d'] = [1.0, -0.5, 2.0]
-    return params, out
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    open_ = df["open"]
+
+    rng = high - low
+    body = (close - open_).abs()
+
+    # True Range and ATR(14), shifted so it's prior-to-today
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        rng,
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+    atr14 = tr.rolling(14).mean().shift(1)
+
+    # Compression: avg 5-day range, in bottom 25th percentile of last 100 such values (prior to today)
+    avg5_rng = rng.rolling(5).mean()
+    avg5_rng_prev = avg5_rng.shift(1)
+    pct_rank = avg5_rng_prev.rolling(100).rank(pct=True)
+    compression = pct_rank <= 0.25
+
+    # Power bar conditions
+    safe_rng = rng.replace(0, np.nan)
+    body_ratio = body / safe_rng
+    close_pos = (close - low) / safe_rng
+
+    power_bar = (
+        (rng > 1.5 * atr14) &
+        (body_ratio >= 0.7) &
+        (close_pos >= 0.8) &
+        (close > open_)
+    )
+
+    mask = compression & power_bar
+    mask = mask.fillna(False)
+
+    result = df.loc[mask, ["date", "close"]].copy()
+    result["fwd_1d"] = (df["close"].shift(-1) / df["close"] * 100 - 100).loc[mask]
+    result["fwd_3d"] = (df["close"].shift(-3) / df["close"] * 100 - 100).loc[mask]
+    result["fwd_5d"] = (df["close"].shift(-5) / df["close"] * 100 - 100).loc[mask]
+    result["fwd_10d"] = (df["close"].shift(-10) / df["close"] * 100 - 100).loc[mask]
+
+    return params, result
 

@@ -25,10 +25,10 @@ max_strategies_per_timeframe: 3
 strategies_per_refinement: 1
 
 # Seconds between DB polls when waiting for a threshold
-refinement_poll_interval: 180
+refinement_poll_interval: 30
 
 # Refinement kicks in every N main-loop strategies (cumulative across timeframes)
-refinement_threshold_step: 5
+refinement_threshold_step: 3
 
 # ── Winner criteria ──────────────────────────────────────────────────
 #
@@ -57,21 +57,27 @@ data_dirs:
   daily: "data/daily"
   weekly: "data/weekly"
 
-db_path: "logs/backtest-2.db"
+db_path: "logs/autoresearch.db"
 
 # ── Git / publish ────────────────────────────────────────────────────
 
 # Master switch. When false, publish() is a no-op — nothing is committed or
 # pushed anywhere. Local DB and strategies/*.py still update as usual.
-publish_to_github: true
+publish_to_github: false
 
 # Branch prefix — each timeframe pushes to <branch_prefix>/<timeframe>
 branch_prefix: "experiments-1"
 
 # ── LLM ──────────────────────────────────────────────────────────────
+#
+# api_key and (Azure) azure_endpoint are optional — if omitted, the
+# provider SDK falls back to env vars: AZURE_OPENAI_API_KEY +
+# AZURE_OPENAI_ENDPOINT, OPENAI_API_KEY, or ANTHROPIC_API_KEY.
 
 llm:
-  provider: "azure_openai"       # azure_openai | openai | anthropic
-  model: "gpt-4.1"               # model or deployment name
+  provider: "anthropic"       # azure_openai | openai | anthropic
+  model: "claude-opus-4-7"               # model name (or Azure deployment name)
   temperature: 1
-  api_version: "2024-12-01-preview"  # Azure-only
+  api_key: "***"                  # optional; falls back to provider env var
+  # api_version: "2024-12-01-preview"  # Azure-only
+  # azure_endpoint: ""           # Azure-only; falls back to AZURE_OPENAI_ENDPOINT

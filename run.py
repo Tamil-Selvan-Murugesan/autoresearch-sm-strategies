@@ -16,6 +16,8 @@ _LLM_CFG = CFG["llm"]
 
 def _make_llm():
     provider = _LLM_CFG["provider"]
+    temperature = _LLM_CFG.get("temperature", 1)
+    api_key = _LLM_CFG.get("api_key") or None  # None → fall back to env var
 
     if provider == "azure_openai":
         from langchain_openai import AzureChatOpenAI
@@ -23,21 +25,25 @@ def _make_llm():
         return AzureChatOpenAI(
             azure_deployment=_LLM_CFG["model"],
             api_version=_LLM_CFG.get("api_version", "2024-12-01-preview"),
-            temperature=_LLM_CFG.get("temperature", 0.7),
+            azure_endpoint=_LLM_CFG.get("azure_endpoint") or None,
+            api_key=api_key,
+            temperature=temperature,
         )
     elif provider == "openai":
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(
             model=_LLM_CFG["model"],
-            temperature=_LLM_CFG.get("temperature", 0.7),
+            api_key=api_key,
+            temperature=temperature,
         )
     elif provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
         return ChatAnthropic(
             model=_LLM_CFG["model"],
-            temperature=_LLM_CFG.get("temperature", 0.7),
+            api_key=api_key,
+            temperature=temperature,
         )
     else:
         raise ValueError(f"Unknown LLM provider: {provider}")

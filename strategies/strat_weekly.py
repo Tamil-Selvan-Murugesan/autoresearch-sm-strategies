@@ -3,43 +3,39 @@
 import pandas as pd
 import numpy as np
 
-def two_week_bullish_engulfing_with_range_contraction(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+def weekly_three_down_reversal_engulf(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+    import numpy as np
+    import pandas as pd
+
     params = {
-        "signal": "Signal is generated when a bullish engulfing pattern occurs: current week's body (close > open) completely engulfs previous week's body (current open < previous close and current close > previous open). Additionally, the current week's range (high-low) is less than the average range of the prior 8 weeks (range contraction filter).",
-        "field": "open, high, low, close",
-        "engulfing_lookback": 1,
-        "range_contraction_lookback": 8,
-        "direction": "bullish reversal",
-        "forward_weeks": [1, 2, 4]
+        "signal": "Three consecutive red weeks (close < open) followed by a green week (close > open) whose close exceeds the high of the middle red week (t-2), signaling reversal after a 3-week pullback.",
+        "field": "open, high, close",
+        "lookback_red_streak": 3,
+        "reversal_condition": "current week green AND close > high of week t-2 (middle of the 3-red sequence)",
+        "forward_weeks": [1, 2, 4],
     }
 
-    # Bullish Engulfing: current body positive, previous body negative or smaller, body completely "engulfs" prior week
-    prev_open = df["open"].shift(1)
-    prev_close = df["close"].shift(1)
-    prev_body_low = np.minimum(prev_open, prev_close)
-    prev_body_high = np.maximum(prev_open, prev_close)
+    o = df["open"]
+    h = df["high"]
+    c = df["close"]
 
-    # Current body
-    curr_body_low = np.minimum(df["open"], df["close"])
-    curr_body_high = np.maximum(df["open"], df["close"])
-    bullish_engulfing = (
-        (df["close"] > df["open"]) &  # current bullish
-        (prev_close < prev_open) &     # previous bearish
-        (df["open"] < prev_close) &   # opens below prev close
-        (df["close"] > prev_open) &   # closes above prev open
-        (curr_body_low <= prev_body_low) & (curr_body_high >= prev_body_high) # current body fully engulfs prev
-    )
+    red = c < o
+    green = c > o
 
-    # Range contraction: current week range < mean of prev 8 weeks (excluding current week)
-    curr_range = df["high"] - df["low"]
-    avg_prior8_range = curr_range.shift(1).rolling(window=8).mean()
-    range_contraction = curr_range < avg_prior8_range
+    # Three consecutive red weeks at t-3, t-2, t-1
+    three_red = red.shift(1) & red.shift(2) & red.shift(3)
 
-    mask = bullish_engulfing & range_contraction
+    # Current week green and closes above the high of the middle red week (t-2)
+    middle_red_high = h.shift(2)
+    reversal = green & (c > middle_red_high)
+
+    mask = three_red & reversal
+    mask = mask.fillna(False)
+
     result = df.loc[mask, ["date", "close"]].copy()
-
-    for w in [1, 2, 4]:
-        result[f"fwd_{w}d"] = df["close"].shift(-w).loc[mask].values / df["close"].loc[mask].values * 100 - 100
+    result["fwd_1d"] = (df["close"].shift(-1) / df["close"] * 100 - 100).loc[mask]
+    result["fwd_2d"] = (df["close"].shift(-2) / df["close"] * 100 - 100).loc[mask]
+    result["fwd_4d"] = (df["close"].shift(-4) / df["close"] * 100 - 100).loc[mask]
 
     return params, result
 

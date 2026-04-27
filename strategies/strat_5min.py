@@ -3,39 +3,44 @@
 import pandas as pd
 import numpy as np
 
-def vwap_crossover_with_intraday_volume_spike(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+def three_inside_bar_compression_break(df: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     params = {
-        "signal": "Signal when the close price crosses above intraday VWAP AND volume is at least 1.5x the rolling 20-bar average volume. Only triggers on upward cross.",
-        "field": ["close", "volume"],
-        "vwap_window": "All bars since session start (per day)",
-        "volume_spike_multiple": 1.5,
-        "volume_rolling_window": 20,
-        "forward_bars": [1, 5]
+        "signal": "Three consecutive inside bars (each bar's high < prior high AND low > prior low) signaling tight compression, followed by the current bar breaking above the highest high of those 3 inside bars while closing in the top 30% of its own range. Entry is at the close of the breakout bar.",
+        "field": "high, low, close",
+        "inside_bar_count": 3,
+        "breakout_close_position_min": 0.70,
+        "forward_bars": [1, 3, 6, 12],
     }
 
-    df = df.copy()
-    df["date"] = pd.to_datetime(df["date"])
-    df["date_only"] = df["date"].dt.normalize()
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
 
-    # Calculate intraday cumulative sum per session for VWAP
-    df["cum_vol_x_price"] = df["close"] * df["volume"]
-    df["cum_vol_x_price_cumsum"] = df.groupby("date_only")["cum_vol_x_price"].cumsum()
-    df["cum_volume_cumsum"] = df.groupby("date_only")["volume"].cumsum()
-    df["vwap"] = df["cum_vol_x_price_cumsum"] / df["cum_volume_cumsum"]
-    
-    # Volume spike: volume >= 1.5x 20-bar rolling mean (non-overlapping day boundaries)
-    df["rolling_vol"] = df.groupby("date_only")["volume"].transform(lambda x: x.rolling(20, min_periods=1).mean())
-    vol_spike = df["volume"] >= (1.5 * df["rolling_vol"])
-    
-    # VWAP upward cross
-def _upward_cross(series, ref):
-        prev = series.shift(1)
-        prev_ref = ref.shift(1)
-        return (prev < prev_ref) & (series > ref)
-    cross = _upward_cross(df["close"], df["vwap"])
-    
-    mask = cross & vol_spike
+    # Inside bar: high < prev high AND low > prev low
+    inside = (high < high.shift(1)) & (low > low.shift(1))
+
+    # Three consecutive inside bars ending at bar t-1 (so bars t-3, t-2, t-1 are all inside)
+    three_inside = inside.shift(1) & inside.shift(2) & inside.shift(3)
+
+    # Highest high among the 3 inside bars (bars t-3, t-2, t-1)
+    inside_high_max = pd.concat([high.shift(1), high.shift(2), high.shift(3)], axis=1).max(axis=1)
+
+    # Breakout: current high above the inside cluster's max high
+    breakout = high > inside_high_max
+
+    # Close in top 30% of current bar's range
+    bar_range = (high - low).replace(0, np.nan)
+    close_pos = (close - low) / bar_range
+    strong_close = close_pos >= 0.70
+
+    mask = three_inside & breakout & strong_close
+    mask = mask.fillna(False)
+
     result = df.loc[mask, ["date", "close"]].copy()
-    for k in [1,5]:
-        result[f"fwd_{k}d"] = df["close"].shift(-k).loc[mask].values / df["close"].loc[mask].values * 100 - 100
+    result["fwd_1d"] = (close.shift(-1) / close * 100 - 100).loc[mask]
+    result["fwd_3d"] = (close.shift(-3) / close * 100 - 100).loc[mask]
+    result["fwd_6d"] = (close.shift(-6) / close * 100 - 100).loc[mask]
+    result["fwd_12d"] = (close.shift(-12) / close * 100 - 100).loc[mask]
+
     return params, result
+
