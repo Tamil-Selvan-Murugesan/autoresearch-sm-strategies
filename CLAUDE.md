@@ -5,14 +5,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-uv sync                      # install deps (Python >= 3.11)
-uv run python run.py         # run the full system (main loop + refinement loop)
+uv sync                              # install deps (Python >= 3.11)
+uv run python src/run.py             # run the full system (main loop + refinement loop)
+uv run python utils/<script>.py      # run an analysis/utility script
 ```
+
+Always invoke from the repo root — relative paths (`data/`, `prompts/`, `strategies/`,
+`logs/`) and the git plumbing in `publish()` all assume cwd = repo root.
+
+Layout:
+- `src/` — the system itself (`run.py`, `graph.py`, `backtest.py`, `backtest_multi.py`,
+  `refinement.py`, `state.py`, `config.py`).
+- `utils/` — one-off analysis scripts (`analyze_winners*.py`, `fetch_winners.py`,
+  `build_nr7_table.py`, `plot_signals.py`). Each prepends `<repo>/src` to `sys.path`
+  at import time so they can `from config import CFG` etc.
 
 No test suite. To quickly sanity-check imports after edits:
 
 ```bash
-uv run python -c "import state, backtest, backtest_multi, graph, refinement, run"
+uv run python -c "import sys; sys.path.insert(0, 'src'); import state, backtest, backtest_multi, graph, refinement, run"
 ```
 
 ### Required environment variables (Azure OpenAI provider)
